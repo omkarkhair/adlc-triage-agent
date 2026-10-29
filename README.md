@@ -59,7 +59,8 @@ public fork of the demo app on GitHub.
 
 Open an issue on your fork, then use either:
 
-- **Live:** `pnpm exec wrangler tail adlc-triage-agent --format pretty`
+- **Live:** `pnpm exec wrangler tail adlc-triage-agent --format pretty` (start it first; it
+  can take up to 30 seconds after "Connected" before logs stream)
 - **Dashboard:** Workers & Pages → `adlc-triage-agent` → **Observability** → Logs
 
 Each verified delivery logs one line:
