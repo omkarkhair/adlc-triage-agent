@@ -1,0 +1,33 @@
+.dev.vars.example
+  s_16a7c74ee46c60::t_89421e0bee60db 2-5
+Dockerfile
+  s_16a7c74ee46c60::t_e3767de26986ec 1-5
+README.md
+  s_16a7c74ee46c60::t_09c6e95c2743ed 3-5,7-13,18-21,23-27,29,67-104,106-117,119-122,124-126,130-131,133-136,140,142-163,166-183,187-188,197,208-217
+package.json
+  s_16a7c74ee46c60::t_48b634ae0d0335 18-19,29
+pnpm-lock.yaml
+  s_16a7c74ee46c60::t_0e3e4554b52ef1 14-16
+scripts/show-report.ts
+  s_16a7c74ee46c60::t_52e3947f4a26a4 1-31
+src/github/webhook.ts
+  s_16a7c74ee46c60::t_c20a76e704c01d 5-6,16-25,28,49-71,74,83,86-112,114-115,117
+tests/triage.test.ts
+  s_16a7c74ee46c60::t_bbec35f79a8ace 2,4-5,8,21-23,25-29,42,96-170,183-264
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "28a5e229ac549deb95e58b78ccf43a683e754eca",
+  "prompts": {},
+  "sessions": {
+    "s_16a7c74ee46c60": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_e778358b8ffeJeJYLEAovqRqp6",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Omkar Khair <omkar@cloudflare.com>"
+    }
+  }
+}
