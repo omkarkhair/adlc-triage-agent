@@ -15,9 +15,13 @@ verification of the agent's claim.
 
 ## Stack
 
-Flue 2.3 on the Cloudflare target (Vite build; `'use agent'` modules become
-Durable Objects), Hono, TypeScript, pnpm, Vitest (Node), Biome, wrangler 4.
-`@cloudflare/sandbox` is pinned to 0.12.14 for later checkpoints; Flue's
+Flue **2.0.0, pinned exactly** on the Cloudflare target (Vite build; `'use agent'`
+modules become Durable Objects), Hono, TypeScript, pnpm, Vitest (Node), Biome, wrangler 4.
+Do not upgrade `@flue/*`: later versions delay Workers Observability logs. Flue
+2.0.0 needs Cloudflare's Agents SDK installed alongside it (`agents`, pinned to
+0.20.1, the version Flue 2.0.0 is built against), and `hono` is pinned to 4.12.32
+to match `@flue/github`'s exact dependency (a different hono breaks the channel's
+route types). `@cloudflare/sandbox` is pinned to 0.12.14 for later checkpoints; Flue's
 `cloudflareSandbox()` expects the 0.x API, so do not upgrade it to 1.x.
 
 ## Commands
