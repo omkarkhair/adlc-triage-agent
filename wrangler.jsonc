@@ -3,5 +3,20 @@
   "name": "adlc-triage-agent",
   "compatibility_date": "2026-10-20",
   "compatibility_flags": ["nodejs_compat"],
-  "observability": { "enabled": true, "traces": { "enabled": true } }
+  "observability": { "enabled": true, "traces": { "enabled": true } },
+  "ai": { "binding": "AI" },
+  "vars": { "AI_GATEWAY_ID": "adlc-triage-agent" },
+  "r2_buckets": [{ "binding": "REPORTS", "bucket_name": "adlc-triage-reports" }],
+  "durable_objects": {
+    "bindings": [{ "name": "Sandbox", "class_name": "Sandbox" }]
+  },
+  "containers": [
+    {
+      "class_name": "Sandbox",
+      "image": "./Dockerfile",
+      "instance_type": "standard-1",
+      "max_instances": 3
+    }
+  ],
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["FlueReproducerAgent", "Sandbox"] }]
 }

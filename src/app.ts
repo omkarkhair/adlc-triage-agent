@@ -1,12 +1,37 @@
 import { env } from "cloudflare:workers";
+import { dispatch } from "@flue/runtime";
 import { Hono } from "hono";
-import { createTriageChannel } from "./github/webhook";
+import { Reproducer, type ReproducerData } from "./agents/reproducer";
+import { createTriageChannel, type OpenedIssue } from "./github/webhook";
+import { registerModelProviders } from "./models";
+
+registerModelProviders(env);
+
+async function startReproducer(issue: OpenedIssue): Promise<void> {
+  const initialData: ReproducerData = { repo: issue.repo, issueNumber: issue.issueNumber };
+  await dispatch(Reproducer, {
+    id: issue.agentId,
+    idempotencyKey: issue.deliveryId,
+    initialData,
+    message: {
+      kind: "signal",
+      type: "github.issue.opened",
+      tagName: "issue",
+      attributes: {
+        repository: issue.repo,
+        number: String(issue.issueNumber),
+        author: issue.author,
+      },
+      body: `Title: ${issue.title}\n\n${issue.body}`,
+    },
+  });
+}
 
 let githubIngress: Hono | undefined;
 
 function getGitHubIngress(secret: string): Hono {
   if (!githubIngress) {
-    const channel = createTriageChannel({ webhookSecret: secret });
+    const channel = createTriageChannel({ webhookSecret: secret, onIssueOpened: startReproducer });
     githubIngress = new Hono().route("/channels/github", channel.route());
   }
   return githubIngress;
