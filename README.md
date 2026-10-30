@@ -1,23 +1,32 @@
 # adlc triage agent
 
-Starter for the ADLC workshop triage bot. Over the workshop you will turn this
-Worker into an agent that reacts to new GitHub issues on your copy of the demo
-order-tracker app, reproduces the bug in an isolated sandbox, and reports back on
-the issue.
+Starter for the ADLC workshop triage bot. Over the workshop you turn this Worker
+into an agent that reacts to new GitHub issues on your copy of the demo
+order-tracker app, reproduces the bug in an isolated sandbox, and reports back.
 
-**Checkpoint 0 (this branch):** a Cloudflare Worker that receives GitHub webhook
-deliveries, verifies their signature, and logs them. Nothing else happens yet.
+You build it in checkpoints. Each one has a solution branch you can switch to if
+you fall behind (commit or stash your work, check out the branch, redeploy).
+
+| Checkpoint                | What works at the end                                                      | Branch             |
+| ------------------------- | -------------------------------------------------------------------------- | ------------------ |
+| **0. Setup**              | A verified GitHub webhook reaches your Worker and is logged.               | `dev/checkpoint-0` |
+| **1. Agent in a sandbox** | A new issue starts an agent that tries to reproduce it and saves a report. | `dev/checkpoint-1` |
 
 ## Stack
 
 [Flue](https://flueframework.com/) on the Cloudflare target (Vite build), Hono,
-TypeScript, pnpm, Vitest, Biome. Dependencies for later checkpoints (Cloudflare
-Sandbox, Valibot) are already installed so you only run `pnpm install` once.
+TypeScript, pnpm, Vitest, Biome, Cloudflare Sandbox. Every dependency the workshop
+needs is already in `package.json`, so you run `pnpm install` once.
 
-## Setup
+## Prerequisites
 
-You need Node 22+, pnpm 10, a Cloudflare account (provided on the day), and a
-public fork of the demo app on GitHub.
+- Node 22+ and pnpm 10.
+- A Cloudflare account (provided on the day).
+- A public fork of the demo app on GitHub, with Issues turned on.
+- From checkpoint 1: **Docker**, running. `pnpm run deploy` builds the sandbox
+  container image locally. On Apple Silicon, enable amd64 emulation (Rosetta).
+
+## Setup (checkpoint 0)
 
 1. Install and log in:
 
@@ -55,43 +64,128 @@ public fork of the demo app on GitHub.
 
    Saving sends a `ping`; **Recent Deliveries** should show a green tick (200).
 
-## See the webhook in observability
+5. Open an issue on your fork and watch the logs:
+   - **Live:** `pnpm exec wrangler tail adlc-triage-agent --format pretty` (start it
+     first; it can take up to 30 seconds after "Connected" before logs stream)
+   - **Dashboard:** Workers & Pages → `adlc-triage-agent` → **Observability**
 
-Open an issue on your fork, then use either:
+   Each verified delivery logs one line, and **Recent Deliveries** shows the
+   response `{"status":"received",…}`:
 
-- **Live:** `pnpm exec wrangler tail adlc-triage-agent --format pretty` (start it first; it
-  can take up to 30 seconds after "Connected" before logs stream)
-- **Dashboard:** Workers & Pages → `adlc-triage-agent` → **Observability** → Logs
+   ```json
+   {
+     "event": "webhook.received",
+     "deliveryId": "…",
+     "githubEvent": "issues",
+     "action": "opened",
+     "repo": "<you>/adlc-demo-app",
+     "issue": 1,
+     "sender": "<you>"
+   }
+   ```
 
-Each verified delivery logs one line:
+## Checkpoint 1: agent in a sandbox
+
+Each newly opened issue starts a `Reproducer` agent. It runs a Workers AI model
+with a Cloudflare Sandbox (a Linux container): it clones your fork, runs the
+tests, writes a regression test for the reported bug, and ends by calling a
+`save_report` tool that stores a Markdown report in R2.
+
+You change `wrangler.jsonc` (AI, R2, and Sandbox bindings), `src/cloudflare.ts`,
+and `src/app.ts`, and add `src/agents/reproducer.ts`, `src/agents/reproducer.md`,
+and `src/reports.ts`. Run `pnpm cf-typegen` after editing `wrangler.jsonc`. The
+helpers in `src/models.ts`, `src/github/webhook.ts`, and the `Dockerfile` are
+provided.
+
+### Account resources
+
+The agent needs the R2 bucket `adlc-triage-reports` and the AI Gateway
+`adlc-triage-agent`. Workshop accounts come with both. On your own account,
+create them once:
+
+```sh
+pnpm exec wrangler r2 bucket create adlc-triage-reports
+```
+
+Then in the dashboard: **AI → AI Gateway → Create Gateway**, named
+`adlc-triage-agent`.
+
+### Deploy and run
+
+```sh
+pnpm run deploy   # Docker must be running; the first deploy takes a few minutes
+```
+
+Open a new issue on your fork (or use `pnpm webhook:send`, below). An
+`issues: opened` delivery logs `agent.dispatched`, and **Recent Deliveries** shows
+`{"status":"dispatched","agentId":"issue-<n>",…}`. Other actions (edited,
+labeled, closed) are only logged.
+
+The agent runs in the background. The first run waits for the container to start,
+then clones, installs, and runs tests, so expect a few minutes. When it saves its
+report you see `report.saved`, then:
 
 ```json
 {
-  "event": "webhook.received",
-  "deliveryId": "…",
-  "githubEvent": "issues",
-  "action": "opened",
-  "repo": "<you>/adlc-demo-app",
+  "event": "agent.finished",
+  "agentId": "issue-1",
   "issue": 1,
-  "sender": "<you>"
+  "model": "cloudflare/@cf/zai-org/glm-4.7-flash",
+  "reportSaved": true,
+  "toolCalls": 14,
+  "totalTokens": 48210
 }
 ```
 
-In GitHub, **Recent Deliveries** shows the response `{"status":"received",…}`.
-Editing, labelling, or commenting on the issue also produces deliveries; at this
-checkpoint every verified delivery is logged.
-
-## Local development (optional)
+Read the report:
 
 ```sh
-cp .dev.vars.example .dev.vars   # set GITHUB_WEBHOOK_SECRET
-pnpm dev                         # http://localhost:5173
-pnpm webhook:send --title "Test issue" --body-file issue.md --repo <you>/adlc-demo-app
+pnpm report 1    # prints runs/issue-1/report.md from the adlc-triage-reports bucket
+```
+
+`reportSaved: false` means the model stopped without calling the tool. For the
+step-by-step detail (every model turn and command), open **Observability →
+Traces** and find the `invoke_agent Reproducer` span; traces can take a few
+minutes to appear. Model requests appear in **AI → AI Gateway →
+`adlc-triage-agent`**.
+
+Each issue gets its own agent instance and sandbox (`issue-<n>`). Another delivery
+for the same issue number continues that conversation; use a new issue number for
+a fresh run.
+
+> **Workshop shortcut:** every opened issue starts an agent, which costs a
+> container and model tokens. A production bot needs intake rules first (see the
+> comment in `src/github/webhook.ts`).
+
+### Optional: use a shared AI Gateway
+
+If AI doesn't work in your account, the instructor can give you a token for a
+shared AI Gateway in another account. Set two secrets and redeploy:
+
+```sh
+pnpm exec wrangler secret put AI_GATEWAY_TOKEN        # token from the instructor
+pnpm exec wrangler secret put AI_GATEWAY_ACCOUNT_ID   # the gateway's account id
+pnpm run deploy
+```
+
+The gateway name is still the `AI_GATEWAY_ID` var. With both secrets set, model
+calls go over HTTP to `https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/compat`
+instead of your Workers AI binding, and `agent.finished` shows
+`"model":"cloudflare-ai-gateway/workers-ai/@cf/zai-org/glm-4.7-flash"`. Model usage
+is billed to the gateway's account; the sandbox, R2, and the Worker stay in yours.
+To switch back, delete both secrets (`wrangler secret delete …`) and redeploy.
+
+## Sending test issues
+
+```sh
+cp .dev.vars.example .dev.vars   # set GITHUB_WEBHOOK_SECRET to the deployed value
+pnpm webhook:send --url https://<your-worker>.workers.dev/channels/github/webhook \
+  --repo <you>/adlc-demo-app --number 101 --title "Test issue" --body-file issue.md
 ```
 
 `webhook:send` signs a fake `issues: opened` delivery with the secret from
-`.dev.vars`. Add `--url https://<your-worker>.workers.dev/channels/github/webhook`
-to send it to the deployed Worker instead (the secrets must match).
+`.dev.vars`. Use a new `--number` for a fresh agent. Without `--url` it targets
+`pnpm dev` at http://localhost:5173 (local runs need Docker and a wrangler login).
 
 ## Commands
 
@@ -100,6 +194,7 @@ to send it to the deployed Worker instead (the secrets must match).
 | `pnpm dev`          | Local dev server at http://localhost:5173.                                 |
 | `pnpm run deploy`   | Build and deploy the Worker.                                               |
 | `pnpm webhook:send` | Send a signed fake issue webhook (`--dry-run` to print it).                |
+| `pnpm report <n>`   | Print the agent's saved report for issue `<n>` from R2 (checkpoint 1+).    |
 | `pnpm lint`         | Biome check (`pnpm format` to fix).                                        |
 | `pnpm typecheck`    | `tsc --noEmit`.                                                            |
 | `pnpm test`         | Unit tests.                                                                |
@@ -110,14 +205,14 @@ to send it to the deployed Worker instead (the secrets must match).
 
 ```
 src/app.ts                 HTTP routes (Flue keeps all routing here)
-src/github/webhook.ts      verified GitHub ingress: logs each delivery
-tests/webhook.test.ts      ingress tests
-scripts/send-test-webhook.ts
-wrangler.jsonc             Worker config: no bindings yet
+src/github/webhook.ts      verified GitHub ingress; hands opened issues to app.ts
+src/models.ts              provided: model choice, your gateway or a shared one
+src/cloudflare.ts          Worker-level exports (cp1: the Sandbox container class)
+src/agents/reproducer.ts   cp1: the agent (model, sandbox, save_report tool)
+src/agents/reproducer.md   cp1: the agent's instructions
+src/reports.ts             cp1: writes the report to R2
+Dockerfile                 provided: sandbox image, used from cp1
+tests/triage.test.ts       unit tests
+scripts/                   send-test-webhook.ts, show-report.ts
+wrangler.jsonc             Worker config; each checkpoint adds its bindings
 ```
-
-## Next: checkpoint 1
-
-Add the reproduction agent: a Flue agent with a Workers AI model and a Cloudflare
-Sandbox it can run commands in. That checkpoint adds the `AI` binding, the sandbox
-container, and the agent's Durable Object migration to `wrangler.jsonc`.
