@@ -1,0 +1,23 @@
+src/agents/reproducer.md
+  s_16a7c74ee46c60::t_943f601e5b4b57 33,35,37-43,45-54
+src/agents/reproducer.ts
+  s_16a7c74ee46c60::t_32a61d213b6c17 6,9,16-17,21,36,39-46,48-53,57-70,78
+src/reports.ts
+  s_16a7c74ee46c60::t_85cd54e8dbb268 1,24-30,37-43,51,55,61
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "e206ce3c5c47ccc364f67431e5cfe1fd140feaf2",
+  "prompts": {},
+  "sessions": {
+    "s_16a7c74ee46c60": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_e778358b8ffeJeJYLEAovqRqp6",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Omkar Khair <omkar@cloudflare.com>"
+    }
+  }
+}
