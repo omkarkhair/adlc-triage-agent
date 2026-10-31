@@ -7,10 +7,11 @@ order-tracker app, reproduces the bug in an isolated sandbox, and reports back.
 You build it in checkpoints. Each one has a solution branch you can switch to if
 you fall behind (commit or stash your work, check out the branch, redeploy).
 
-| Checkpoint                | What works at the end                                                      | Branch             |
-| ------------------------- | -------------------------------------------------------------------------- | ------------------ |
-| **0. Setup**              | A verified GitHub webhook reaches your Worker and is logged.               | `dev/checkpoint-0` |
-| **1. Agent in a sandbox** | A new issue starts an agent that tries to reproduce it and saves a report. | `dev/checkpoint-1` |
+| Checkpoint                | What works at the end                                                         | Branch             |
+| ------------------------- | ----------------------------------------------------------------------------- | ------------------ |
+| **0. Setup**              | A verified GitHub webhook reaches your Worker and is logged.                  | `dev/checkpoint-0` |
+| **1. Agent in a sandbox** | A new issue starts an agent that tries to reproduce it and saves a report.    | `dev/checkpoint-1` |
+| **2. Structured outcome** | The agent must submit a typed, validated result; the report is built from it. | `dev/checkpoint-2` |
 
 ## Stack
 
@@ -175,6 +176,65 @@ instead of your Workers AI binding, and `agent.finished` shows
 is billed to the gateway's account; the sandbox, R2, and the Worker stay in yours.
 To switch back, delete both secrets (`wrangler secret delete …`) and redeploy.
 
+## Checkpoint 2: structured outcome
+
+In checkpoint 1 the agent ends with free text, and nothing happens if it forgets
+to call `save_report`. Now it must submit a **typed result**, and the harness
+won't let it stop without one:
+
+- `submit_outcome` replaces `save_report`. Its input is a schema: `outcome`
+  (`reproduced`, `cannot-reproduce`, or `needs-information`), `summary`,
+  `expected`, `observed`, and optional `testFile`, `missingInformation`, and
+  `hypothesis`. Invalid input is rejected and the model sees the error and
+  retries. Code also checks rules the schema can't express: `reproduced` needs a
+  `testFile`, `needs-information` needs `missingInformation`.
+- If the agent tries to stop without a successful `submit_outcome`, a finish hook
+  sends it back with a reminder, at most `MAX_REMINDERS` (2) times.
+- The R2 report is rendered from the fields by code, so every report has the
+  same sections.
+
+You add `src/outcome.ts` and change `src/agents/reproducer.ts`,
+`src/agents/reproducer.md`, and `src/reports.ts`. No new bindings, so the redeploy
+is quick.
+
+```sh
+pnpm run deploy
+```
+
+Open a new issue. In the logs you now see `outcome.submitted` with the result,
+`agent.reminded` if the agent needed a nudge, and `agent.finished` with
+`"outcomeSubmitted": true`. For issue 7, `pnpm report 7` prints:
+
+```text
+# Triage report: <you>/adlc-demo-app#7
+
+- Agent: `issue-7`
+- Saved: 2026-11-04T10:12:00.000Z
+
+**Outcome:** `reproduced`
+
+## Summary
+
+…
+
+## Expected
+
+…
+
+## Observed
+
+…
+
+## Test file
+
+`tests/triage/issue-7.test.ts`
+```
+
+Try a vague issue too (for example "Orders are broken"): the agent should answer
+`needs-information` and list what it needs.
+
+The outcome is still the agent's own claim. Nothing re-runs its test yet.
+
 ## Sending test issues
 
 ```sh
@@ -208,9 +268,10 @@ src/app.ts                 HTTP routes (Flue keeps all routing here)
 src/github/webhook.ts      verified GitHub ingress; hands opened issues to app.ts
 src/models.ts              provided: model choice, your gateway or a shared one
 src/cloudflare.ts          Worker-level exports (cp1: the Sandbox container class)
-src/agents/reproducer.ts   cp1: the agent (model, sandbox, save_report tool)
+src/agents/reproducer.ts   cp1: the agent (model, sandbox, tool); cp2: submit_outcome
 src/agents/reproducer.md   cp1: the agent's instructions
 src/reports.ts             cp1: writes the report to R2
+src/outcome.ts             cp2: the outcome schema and its extra checks
 Dockerfile                 provided: sandbox image, used from cp1
 tests/triage.test.ts       unit tests
 scripts/                   send-test-webhook.ts, show-report.ts
