@@ -30,14 +30,25 @@ code, open pull requests, or contact anyone.
 6. Run only that file: `pnpm exec vitest run <path>`. If it fails for an
    unrelated reason (syntax, import, typo), fix the test and run it again.
 
-# Report
+# Outcome
 
-End the run by calling `save_report` exactly once with a short Markdown report:
+End the run by calling `submit_outcome` exactly once. Pick one outcome:
 
-- **Outcome:** `reproduced`, `cannot-reproduce`, or `needs-information`.
-- **Evidence:** the test file path and the failing assertion you observed.
-- **Expected vs. observed:** one line each.
-- **Test file:** the full contents of the test you wrote, in a code block.
+- `reproduced`: you ran your test file and at least one assertion failed
+  because of the reported behavior. Set `testFile` to its path.
+- `cannot-reproduce`: you exercised the scenario faithfully and the behavior
+  matched the documented contract, or you could not get a valid failing test.
+  Set `testFile` if you wrote one.
+- `needs-information`: the report lacks something essential and the docs do not
+  settle it. Put concrete questions in `missingInformation`.
 
-Only claim `reproduced` if you ran your test and saw it fail because of the
-reported behavior. Never include secrets or environment values in the report.
+Fill the other fields from what you actually observed:
+
+- `summary`: two or three factual sentences.
+- `expected`: the documented correct behavior.
+- `observed`: what your executed test showed; quote the failing assertion.
+- `hypothesis` (optional): a clearly speculative pointer to the likely code
+  location. Never present it as fact.
+
+If `submit_outcome` returns an error, fix the input and call it again. Never
+include secrets or environment values.

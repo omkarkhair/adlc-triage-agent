@@ -3,19 +3,22 @@ import { env } from "cloudflare:workers";
 import { getSandbox, type Sandbox } from "@cloudflare/sandbox";
 import {
   type AgentProps,
+  useAgentFinish,
   useInitialData,
   useModel,
+  usePersistentState,
   useResponseFinish,
   useSandbox,
   useTool,
 } from "@flue/runtime";
 import { cloudflareSandbox } from "@flue/runtime/cloudflare";
-import * as v from "valibot";
 import { modelFor } from "../models";
-import { REPORT_MAX_CHARS, saveReport } from "../reports";
+import { checkOutcome, ReproOutcome } from "../outcome";
+import { saveReport } from "../reports";
 import procedure from "./reproducer.md";
 
 export const WORKSPACE = "/workspace";
+export const MAX_REMINDERS = 2;
 
 export interface ReproducerData {
   repo: string;
@@ -30,18 +33,39 @@ export function Reproducer({ id }: AgentProps) {
   useSandbox(cloudflareSandbox(getSandbox(sandboxes, id)), { cwd: WORKSPACE });
 
   const data = useInitialData<ReproducerData>();
+  const [reminders, setReminders] = usePersistentState("reminders", 0);
 
   useTool({
-    name: "save_report",
-    description:
-      "Save your final triage report (Markdown) and end the run. Call exactly once, last.",
-    input: v.object({ report: v.pipe(v.string(), v.minLength(1), v.maxLength(REPORT_MAX_CHARS)) }),
-    async run({ data: input }) {
+    name: "submit_outcome",
+    description: "Record your final reproduction outcome and end the run. Call exactly once, last.",
+    input: ReproOutcome,
+    async run({ data: outcome }) {
+      const problem = checkOutcome(outcome);
+      if (problem) {
+        throw new Error(problem);
+      }
       const context = { agentId: id, repo: data.repo, issueNumber: data.issueNumber };
-      const key = await saveReport(env.REPORTS, context, input.report);
-      console.log(JSON.stringify({ event: "report.saved", agentId: id, key }));
-      return { output: `Report saved as ${key}.`, terminate: true };
+      const key = await saveReport(env.REPORTS, context, outcome);
+      setReminders(0);
+      console.log(
+        JSON.stringify({ event: "outcome.submitted", agentId: id, outcome: outcome.outcome, key }),
+      );
+      return { output: `Outcome recorded as ${key}.`, terminate: true };
     },
+  });
+
+  useAgentFinish(({ response, append }) => {
+    const submitted = response.toolCalls.some((c) => c.tool === "submit_outcome" && !c.isError);
+    if (submitted || reminders >= MAX_REMINDERS) {
+      return;
+    }
+    setReminders(reminders + 1);
+    console.log(JSON.stringify({ event: "agent.reminded", agentId: id, reminder: reminders + 1 }));
+    append({
+      kind: "signal",
+      type: "triage.reminder",
+      body: "You stopped without a successful submit_outcome call. Call submit_outcome now with the best supported outcome. Use cannot-reproduce if you have no failing test.",
+    });
   });
 
   useResponseFinish(({ response }) => {
@@ -51,7 +75,7 @@ export function Reproducer({ id }: AgentProps) {
         agentId: id,
         issue: data.issueNumber,
         model,
-        reportSaved: response.toolCalls.some((c) => c.tool === "save_report" && !c.isError),
+        outcomeSubmitted: response.toolCalls.some((c) => c.tool === "submit_outcome" && !c.isError),
         toolCalls: response.toolCalls.length,
         totalTokens: response.usage.totalTokens,
       }),
