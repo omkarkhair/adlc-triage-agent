@@ -203,9 +203,9 @@ pnpm run deploy
 
 Open a new issue. In the logs you now see `outcome.submitted` with the result,
 `agent.reminded` if the agent needed a nudge, and `agent.finished` with
-`"outcomeSubmitted": true`. `pnpm report <n>` prints:
+`"outcomeSubmitted": true`. For issue 7, `pnpm report 7` prints:
 
-```md
+```text
 # Triage report: <you>/adlc-demo-app#7
 
 - Agent: `issue-7`
@@ -249,17 +249,17 @@ pnpm webhook:send --url https://<your-worker>.workers.dev/channels/github/webhoo
 
 ## Commands
 
-| Command             | What it does                                                                |
-| ------------------- | --------------------------------------------------------------------------- |
-| `pnpm dev`          | Local dev server at http://localhost:5173.                                  |
-| `pnpm run deploy`   | Build and deploy the Worker.                                                |
-| `pnpm webhook:send` | Send a signed fake issue webhook (`--dry-run` to print it).                 |
-| `pnpm report <n>`   | Print the agent's saved report for issue `<n>` from R2 (checkpoint 1+).     |
-| `pnpm lint`         | Biome check (`pnpm format` to fix).                                         |
-| `pnpm typecheck`    | `tsc --noEmit`.                                                             |
-| `pnpm test`         | Unit tests.                                                                 |
-| `pnpm build`        | Production bundle into `dist/`.                                             |
-| `pnpm cf-typegen`   | Regenerate `src/worker-configuration.d.ts` after editing `wrangler.jsonc`.  |
+| Command             | What it does                                                               |
+| ------------------- | -------------------------------------------------------------------------- |
+| `pnpm dev`          | Local dev server at http://localhost:5173.                                 |
+| `pnpm run deploy`   | Build and deploy the Worker.                                               |
+| `pnpm webhook:send` | Send a signed fake issue webhook (`--dry-run` to print it).                |
+| `pnpm report <n>`   | Print the agent's saved report for issue `<n>` from R2 (checkpoint 1+).    |
+| `pnpm lint`         | Biome check (`pnpm format` to fix).                                        |
+| `pnpm typecheck`    | `tsc --noEmit`.                                                            |
+| `pnpm test`         | Unit tests.                                                                |
+| `pnpm build`        | Production bundle into `dist/`.                                            |
+| `pnpm cf-typegen`   | Regenerate `src/worker-configuration.d.ts` after editing `wrangler.jsonc`. |
 
 ## Layout
 
