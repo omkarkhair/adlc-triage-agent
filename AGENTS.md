@@ -60,6 +60,9 @@ report results honestly.
   `cloudflare:workers` (agents, `app.ts`) cannot be imported by unit tests.
 - One agent instance (and sandbox) per issue: id `issue-<number>`.
 - Log with one JSON object per line: `{"event": "<name>", ...fields}`.
+- Every `sandbox.exec()` (ours and the agent's) runs in one shared bash session per
+  sandbox. Never put `set -e`, `cd` or `export` at the top level of a command:
+  wrap multi-line scripts with `strictScript()` and use the `cwd` option.
 - Two-space indent, 100 columns (Biome). No code comments unless requested.
 
 ## Safety rules
