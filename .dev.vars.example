@@ -1,4 +1,6 @@
 GITHUB_WEBHOOK_SECRET=replace-with-a-long-random-string
+# From checkpoint 3: a fine-grained personal access token for your fork (see the README).
+GITHUB_TOKEN=
 # Optional: send model calls to a shared AI Gateway in another account instead of
 # your own (gateway name = the AI_GATEWAY_ID var). Set both or neither.
 # AI_GATEWAY_TOKEN=token-from-the-instructor

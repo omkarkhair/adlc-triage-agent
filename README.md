@@ -7,11 +7,12 @@ order-tracker app, reproduces the bug in an isolated sandbox, and reports back.
 You build it in checkpoints. Each one has a solution branch you can switch to if
 you fall behind (commit or stash your work, check out the branch, redeploy).
 
-| Checkpoint                | What works at the end                                                         | Branch             |
-| ------------------------- | ----------------------------------------------------------------------------- | ------------------ |
-| **0. Setup**              | A verified GitHub webhook reaches your Worker and is logged.                  | `dev/checkpoint-0` |
-| **1. Agent in a sandbox** | A new issue starts an agent that tries to reproduce it and saves a report.    | `dev/checkpoint-1` |
-| **2. Structured outcome** | The agent must submit a typed, validated result; the report is built from it. | `dev/checkpoint-2` |
+| Checkpoint                  | What works at the end                                                                                                       | Branch             |
+| --------------------------- | --------------------------------------------------------------------------------------------------------------------------- | ------------------ |
+| **0. Setup**                | A verified GitHub webhook reaches your Worker and is logged.                                                                | `dev/checkpoint-0` |
+| **1. Agent in a sandbox**   | A new issue starts an agent that tries to reproduce it and saves a report.                                                  | `dev/checkpoint-1` |
+| **2. Structured outcome**   | The agent must submit a typed, validated result; the report is built from it.                                               | `dev/checkpoint-2` |
+| **3. Workflow and comment** | A new issue starts one durable run that checks out your fork at a pinned commit, runs the agent, and comments on the issue. | `dev/checkpoint-3` |
 
 ## Stack
 
@@ -244,6 +245,75 @@ it needs.
 
 The outcome is still the agent's own claim. Nothing re-runs its test yet.
 
+## Checkpoint 3: workflow and issue comment
+
+Until now the webhook handler started the agent directly and nobody outside your
+logs saw the result. Now each new issue starts a **Workflow** run that drives the
+whole triage durably, step by step, and reports back on the issue:
+
+1. **Resolve the base commit:** ask GitHub which commit your fork's default branch
+   points at, and pin it. Everything in the run uses that exact commit.
+2. **Post a "started" comment** on the issue.
+3. **Prepare the workspace:** trusted code (not the agent) checks the pinned
+   commit out in the sandbox and installs dependencies (`src/workspace.ts`).
+4. **Run the agent** and wait for its outcome. `submit_outcome` now also hands the
+   outcome back to the workflow (`useDataWriter`), not just to R2.
+5. **Update the comment** with the outcome.
+
+The run id is `issue-<number>`, the same as the agent and the sandbox. Workflows
+refuse a second run with the same id, so a redelivered webhook can't start the
+issue twice (the log says `run.duplicate`). Each step is retried on its own if it
+fails, and a step that already finished is never run again.
+
+You add `src/workflow.ts` and the Workflow binding in `wrangler.jsonc`, export the
+class from `src/cloudflare.ts`, start the run from `src/app.ts`, and change
+`src/agents/reproducer.ts` and `src/agents/reproducer.md`. The GitHub client
+(`src/github/client.ts`) and the workspace helper are provided.
+
+### Create a GitHub token
+
+The Worker needs a token to comment on your fork (and, in later checkpoints, to
+open a pull request). Create it once:
+
+1. GitHub → **Settings → Developer settings → Personal access tokens →
+   Fine-grained tokens → Generate new token**.
+2. Expiration: 7 days. Repository access: **Only select repositories** → your
+   demo-app fork.
+3. Repository permissions: **Issues**, **Contents** and **Pull requests**: Read and
+   write. (Metadata: Read-only is added automatically.)
+4. Generate, copy the token, and give it to the Worker:
+
+   ```sh
+   pnpm exec wrangler secret put GITHUB_TOKEN
+   ```
+
+The token stays in the Worker. The sandbox, where the agent runs commands, never
+sees it. Without the token the run still works, but logs `comment.skipped`.
+
+### Deploy and test
+
+```sh
+pnpm run deploy
+```
+
+Open a **real** issue on your fork (the comment needs an issue to land on; a fake
+`webhook:send` number that doesn't exist gives `comment.failed`). Within seconds
+the issue gets a comment saying triage started at a pinned commit. A few minutes
+later the same comment shows the outcome. The logs show the run:
+
+```text
+run.started        {"runId":"issue-12","repo":"<you>/adlc-demo-app","issue":12}
+run.base           {"runId":"issue-12","sha":"3f2c…"}
+comment.published  {"runId":"issue-12","kind":"started","action":"created"}
+workspace.ready    {"runId":"issue-12","durationMs":41000}
+…the agent's turn.* and tool.* lines, outcome.submitted, agent.finished…
+comment.published  {"runId":"issue-12","kind":"outcome","action":"updated"}
+run.finished       {"runId":"issue-12","outcome":"reproduced","failure":null}
+```
+
+To see each step, its retries and its output, open **Workers & Pages →
+Workflows → `adlc-triage-run`** and pick the `issue-12` instance.
+
 ## Sending test issues
 
 ```sh
@@ -253,7 +323,8 @@ pnpm webhook:send --url https://<your-worker>.workers.dev/channels/github/webhoo
 ```
 
 `webhook:send` signs a fake `issues: opened` delivery with the secret from
-`.dev.vars`. Use a new `--number` for a fresh agent. Without `--url` it targets
+`.dev.vars`. Use a new `--number` for a fresh agent. From checkpoint 3 the run
+comments on the issue, so use the number of a real issue on your fork. Without `--url` it targets
 `pnpm dev` at http://localhost:5173 (local runs need Docker and a wrangler login).
 
 ## Commands
@@ -277,7 +348,10 @@ src/app.ts                 HTTP routes (Flue keeps all routing here)
 src/github/webhook.ts      verified GitHub ingress; hands opened issues to app.ts
 src/models.ts              provided: model choice, your gateway or a shared one, request timeout
 src/activity.ts            provided: logs each attempt, model turn and tool call
-src/cloudflare.ts          Worker-level exports (cp1: the Sandbox container class)
+src/github/client.ts       provided: GitHub API calls (pin a commit, comment on an issue)
+src/workspace.ts           provided: check out the pinned commit in the sandbox, install
+src/cloudflare.ts          Worker-level exports (cp1: the Sandbox class; cp3: the Workflow)
+src/workflow.ts            cp3: the durable triage run, one per issue
 src/agents/reproducer.ts   cp1: the agent (model, sandbox, tool); cp2: submit_outcome
 src/agents/reproducer.md   cp1: the agent's instructions
 src/reports.ts             cp1: writes the report to R2
