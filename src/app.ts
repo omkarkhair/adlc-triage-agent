@@ -1,39 +1,37 @@
 import { env } from "cloudflare:workers";
-import { dispatch } from "@flue/runtime";
 import { Hono } from "hono";
 import { logAgentActivity } from "./activity";
-import { Reproducer, type ReproducerData } from "./agents/reproducer";
 import { createTriageChannel, type OpenedIssue } from "./github/webhook";
 import { registerModelProviders } from "./models";
 
 registerModelProviders(env);
 logAgentActivity();
 
-async function startReproducer(issue: OpenedIssue): Promise<void> {
-  const initialData: ReproducerData = { repo: issue.repo, issueNumber: issue.issueNumber };
-  await dispatch(Reproducer, {
-    id: issue.agentId,
-    idempotencyKey: issue.deliveryId,
-    initialData,
-    message: {
-      kind: "signal",
-      type: "github.issue.opened",
-      tagName: "issue",
-      attributes: {
-        repository: issue.repo,
-        number: String(issue.issueNumber),
-        author: issue.author,
-      },
-      body: `Title: ${issue.title}\n\n${issue.body}`,
-    },
-  });
+// One Workflow run per issue. The run id is the issue's agent id (issue-<n>), so a second
+// delivery for the same issue can't start a second run: create() fails and the run exists.
+async function startTriage(issue: OpenedIssue): Promise<void> {
+  try {
+    await env.TRIAGE_WORKFLOW.create({ id: issue.agentId, params: issue });
+  } catch (error) {
+    const existing = await env.TRIAGE_WORKFLOW.get(issue.agentId).catch(() => null);
+    if (!existing) {
+      throw error;
+    }
+    console.log(
+      JSON.stringify({
+        event: "run.duplicate",
+        runId: issue.agentId,
+        deliveryId: issue.deliveryId,
+      }),
+    );
+  }
 }
 
 let githubIngress: Hono | undefined;
 
 function getGitHubIngress(secret: string): Hono {
   if (!githubIngress) {
-    const channel = createTriageChannel({ webhookSecret: secret, onIssueOpened: startReproducer });
+    const channel = createTriageChannel({ webhookSecret: secret, onIssueOpened: startTriage });
     githubIngress = new Hono().route("/channels/github", channel.route());
   }
   return githubIngress;

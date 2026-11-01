@@ -4,6 +4,7 @@ import { getSandbox, type Sandbox } from "@cloudflare/sandbox";
 import {
   type AgentProps,
   useAgentFinish,
+  useDataWriter,
   useInitialData,
   useModel,
   usePersistentState,
@@ -20,9 +21,12 @@ import procedure from "./reproducer.md";
 export const WORKSPACE = "/workspace";
 export const MAX_REMINDERS = 2;
 
+export const OUTCOME_PART = "outcome";
+
 export interface ReproducerData {
   repo: string;
   issueNumber: number;
+  baseSha: string;
 }
 
 export function Reproducer({ id }: AgentProps) {
@@ -34,6 +38,7 @@ export function Reproducer({ id }: AgentProps) {
 
   const data = useInitialData<ReproducerData>();
   const [reminders, setReminders] = usePersistentState("reminders", 0);
+  const writeOutcome = useDataWriter(OUTCOME_PART, { schema: ReproOutcome });
 
   useTool({
     name: "submit_outcome",
@@ -46,6 +51,7 @@ export function Reproducer({ id }: AgentProps) {
       }
       const context = { agentId: id, repo: data.repo, issueNumber: data.issueNumber };
       const key = await saveReport(env.REPORTS, context, outcome);
+      writeOutcome(outcome);
       setReminders(0);
       console.log(
         JSON.stringify({ event: "outcome.submitted", agentId: id, outcome: outcome.outcome, key }),
@@ -85,8 +91,9 @@ export function Reproducer({ id }: AgentProps) {
   const context = [
     "# Run context",
     "",
-    `- Repository: https://github.com/${data.repo}.git`,
+    `- Repository: ${data.repo}`,
     `- Issue number: ${data.issueNumber}`,
+    `- Base commit: ${data.baseSha}`,
     `- Working directory: ${WORKSPACE}`,
   ].join("\n");
 
