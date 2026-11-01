@@ -1,0 +1,31 @@
+src/agents/reproducer.md
+  s_16a7c74ee46c60::t_e35d7e8e130361 22-26
+src/agents/reproducer.ts
+  s_16a7c74ee46c60::t_eb8417d9780957 7,24-25,29,41,54,94,96
+src/app.ts
+  s_16a7c74ee46c60::t_6b6a7f5da85e31 10-27,34
+src/cloudflare.ts
+  s_16a7c74ee46c60::t_846f18679bfa19 2
+src/worker-configuration.d.ts
+  s_16a7c74ee46c60::t_74346fd06e6ef9 2,11
+src/workflow.ts
+  s_16a7c74ee46c60::t_7d4aada08ca23c 1-146
+wrangler.jsonc
+  s_16a7c74ee46c60::t_512df3c62800e4 10-12
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "dd8b52820cc9ce96a8da3cdcc7dd4c8b8cc7a26d",
+  "prompts": {},
+  "sessions": {
+    "s_16a7c74ee46c60": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_e778358b8ffeJeJYLEAovqRqp6",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Omkar Khair <omkar@cloudflare.com>"
+    }
+  }
+}
