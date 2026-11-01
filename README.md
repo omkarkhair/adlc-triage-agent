@@ -150,6 +150,14 @@ Traces** and find the `invoke_agent Reproducer` span; traces can take a few
 minutes to appear. Model requests appear in **AI → AI Gateway →
 `adlc-triage-agent`**.
 
+While the agent works, the logs also show one line per step (from
+`src/activity.ts`): `agent.attempt` when an attempt starts, `turn.started` and
+`turn.finished` around each model call (with its duration and the tools it asked
+for), and `tool.finished` after each tool call. If the last line is
+`turn.started`, the agent is waiting for the model. A model request that takes
+longer than 120 seconds is cut off and retried (`MODEL_REQUEST_TIMEOUT_MS` in
+`src/models.ts`).
+
 Each issue gets its own agent instance and sandbox (`issue-<n>`). Another delivery
 for the same issue number continues that conversation; use a new issue number for
 a fresh run.
@@ -266,7 +274,8 @@ pnpm webhook:send --url https://<your-worker>.workers.dev/channels/github/webhoo
 ```
 src/app.ts                 HTTP routes (Flue keeps all routing here)
 src/github/webhook.ts      verified GitHub ingress; hands opened issues to app.ts
-src/models.ts              provided: model choice, your gateway or a shared one
+src/models.ts              provided: model choice, your gateway or a shared one, request timeout
+src/activity.ts            provided: logs each attempt, model turn and tool call
 src/cloudflare.ts          Worker-level exports (cp1: the Sandbox container class)
 src/agents/reproducer.ts   cp1: the agent (model, sandbox, tool); cp2: submit_outcome
 src/agents/reproducer.md   cp1: the agent's instructions

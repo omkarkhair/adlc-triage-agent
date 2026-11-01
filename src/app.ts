@@ -1,6 +1,9 @@
 import { env } from "cloudflare:workers";
 import { Hono } from "hono";
+import { logAgentActivity } from "./activity";
 import { createTriageChannel } from "./github/webhook";
+
+logAgentActivity();
 
 let githubIngress: Hono | undefined;
 
