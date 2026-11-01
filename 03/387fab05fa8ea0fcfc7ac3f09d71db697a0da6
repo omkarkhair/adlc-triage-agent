@@ -1,0 +1,23 @@
+README.md
+  s_16a7c74ee46c60::t_7d74de66281340 16,318-357,394,396
+src/verify.ts
+  s_16a7c74ee46c60::t_5820a92436fb56 1-223
+tests/triage.test.ts
+  s_16a7c74ee46c60::t_a4da022f3740f2 15-22,543-681
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "03387fab05fa8ea0fcfc7ac3f09d71db697a0da6",
+  "prompts": {},
+  "sessions": {
+    "s_16a7c74ee46c60": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_e778358b8ffeJeJYLEAovqRqp6",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Omkar Khair <omkar@cloudflare.com>"
+    }
+  }
+}
