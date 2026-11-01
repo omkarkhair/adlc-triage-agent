@@ -3,6 +3,7 @@ import { createModels } from "@earendil-works/pi-ai";
 import type { FlueEvent } from "@flue/runtime";
 import { describe, expect, it, vi } from "vitest";
 import { activityRecord } from "../src/activity";
+import { commentMarker, GitHubClient } from "../src/github/client";
 import { createTriageChannel, type OpenedIssue, summarizeDelivery } from "../src/github/webhook";
 import {
   modelFor,
@@ -11,6 +12,7 @@ import {
   withDeadline,
   withModelTimeout,
 } from "../src/models";
+import { type ExecLike, prepareWorkspace } from "../src/workspace";
 
 const SECRET = "test-webhook-secret";
 const ACCOUNT = "0123456789abcdef0123456789abcdef";
@@ -18,7 +20,7 @@ const ACCOUNT = "0123456789abcdef0123456789abcdef";
 const issueOpened = JSON.stringify({
   action: "opened",
   issue: { number: 3, title: "Bug", body: "Body", user: { login: "alice", type: "User" } },
-  repository: { id: 99, full_name: "acme/demo-app" },
+  repository: { id: 99, full_name: "acme/demo-app", default_branch: "trunk" },
   sender: { login: "alice", type: "User" },
 });
 
@@ -127,6 +129,7 @@ describe("handing opened issues to the app", () => {
       deliveryId: "delivery-1",
       agentId: "issue-3",
       repo: "acme/demo-app",
+      defaultBranch: "trunk",
       issueNumber: 3,
       title: "Bug",
       body: "Body",
@@ -383,5 +386,149 @@ describe("activityRecord", () => {
 
   it("ignores streaming deltas", () => {
     expect(record({ type: "text_delta", text: "hi" })).toBeNull();
+  });
+});
+
+describe("GitHubClient", () => {
+  const SHA = "a".repeat(40);
+  type Call = { method: string; url: string; headers: Headers; body: unknown };
+
+  function fakeGitHub(handler: (call: Call) => Response) {
+    const calls: Call[] = [];
+    const fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      const call = {
+        method: init?.method ?? "GET",
+        url: String(url),
+        headers: new Headers(init?.headers),
+        body: init?.body ? JSON.parse(String(init.body)) : undefined,
+      };
+      calls.push(call);
+      return handler(call);
+    }) as typeof globalThis.fetch;
+    return { calls, fetch };
+  }
+
+  it("resolves a branch to a pinned sha with the token", async () => {
+    const gh = fakeGitHub(() => new Response(`${SHA}\n`));
+    const client = new GitHubClient(" tok ", gh.fetch);
+    await expect(client.resolveBranchHead("acme/demo-app", "main")).resolves.toBe(SHA);
+    expect(gh.calls[0]?.url).toBe("https://api.github.com/repos/acme/demo-app/commits/main");
+    expect(gh.calls[0]?.headers.get("accept")).toBe("application/vnd.github.sha");
+    expect(gh.calls[0]?.headers.get("authorization")).toBe("Bearer tok");
+  });
+
+  it("rejects a bad repository name and a bad sha", async () => {
+    const client = new GitHubClient("tok", fakeGitHub(() => new Response("not-a-sha")).fetch);
+    await expect(client.resolveBranchHead("acme/demo-app", "main")).rejects.toThrow("invalid");
+    await expect(client.resolveBranchHead("../x", "main")).rejects.toThrow("Invalid repository");
+  });
+
+  it("creates a comment when none carries the marker", async () => {
+    const marker = commentMarker("issue-3", "triage");
+    const gh = fakeGitHub((call) =>
+      call.method === "GET"
+        ? Response.json([{ id: 1, body: "someone else" }])
+        : Response.json({ id: 42 }),
+    );
+    const result = await new GitHubClient("tok", gh.fetch).upsertComment(
+      "acme/demo-app",
+      3,
+      marker,
+      "hello",
+    );
+    expect(result).toEqual({ commentId: 42, action: "created" });
+    expect(gh.calls[1]).toMatchObject({
+      method: "POST",
+      url: "https://api.github.com/repos/acme/demo-app/issues/3/comments",
+      body: { body: `${marker}\nhello` },
+    });
+  });
+
+  it("updates our earlier comment instead of posting twice", async () => {
+    const marker = commentMarker("issue-3", "triage");
+    const gh = fakeGitHub((call) =>
+      call.method === "GET"
+        ? Response.json([{ id: 7, body: `${marker}\nold` }])
+        : Response.json({ id: 7 }),
+    );
+    const result = await new GitHubClient("tok", gh.fetch).upsertComment(
+      "acme/demo-app",
+      3,
+      marker,
+      "new",
+    );
+    expect(result).toEqual({ commentId: 7, action: "updated" });
+    expect(gh.calls[1]).toMatchObject({
+      method: "PATCH",
+      url: "https://api.github.com/repos/acme/demo-app/issues/comments/7",
+    });
+  });
+
+  it("refuses to comment without a token", async () => {
+    const client = new GitHubClient("", fakeGitHub(() => Response.json([])).fetch);
+    expect(client.canWrite).toBe(false);
+    await expect(client.upsertComment("acme/demo-app", 3, "<!-- m -->", "x")).rejects.toThrow(
+      "GITHUB_TOKEN",
+    );
+  });
+
+  it("reports GitHub errors with the status", async () => {
+    const client = new GitHubClient(
+      "tok",
+      fakeGitHub(() => new Response("", { status: 404 })).fetch,
+    );
+    await expect(client.resolveBranchHead("acme/demo-app", "main")).rejects.toThrow("404");
+  });
+});
+
+describe("prepareWorkspace", () => {
+  const SHA = "b".repeat(40);
+
+  function fakeSandbox(results: { exitCode: number; stdout?: string; stderr?: string }[]) {
+    const commands: { command: string; cwd?: string }[] = [];
+    const sandbox: ExecLike = {
+      async exec(command, options) {
+        commands.push({ command, cwd: options?.cwd });
+        const next = results.shift() ?? { exitCode: 0 };
+        return { stdout: "", stderr: "", ...next };
+      },
+    };
+    return { sandbox, commands };
+  }
+
+  it("checks out the pinned sha, then installs", async () => {
+    const { sandbox, commands } = fakeSandbox([
+      { exitCode: 0, stdout: `${SHA}\n` },
+      { exitCode: 0 },
+    ]);
+    await expect(prepareWorkspace(sandbox, "acme/demo-app", SHA)).resolves.toEqual({ sha: SHA });
+    expect(commands[0]?.command).toContain(`fetch -q --depth 1 origin ${SHA}`);
+    expect(commands[0]?.command).toContain("https://github.com/acme/demo-app.git");
+    expect(commands[1]).toEqual({
+      command: "pnpm install --frozen-lockfile --reporter=append-only",
+      cwd: "/workspace",
+    });
+  });
+
+  it("fails when the checkout lands on another commit", async () => {
+    const { sandbox } = fakeSandbox([{ exitCode: 0, stdout: "c".repeat(40) }]);
+    await expect(prepareWorkspace(sandbox, "acme/demo-app", SHA)).rejects.toThrow("expected");
+  });
+
+  it("fails with the tail of the output when install fails", async () => {
+    const { sandbox } = fakeSandbox([
+      { exitCode: 0, stdout: SHA },
+      { exitCode: 1, stderr: "ERR_PNPM_OUTDATED_LOCKFILE" },
+    ]);
+    await expect(prepareWorkspace(sandbox, "acme/demo-app", SHA)).rejects.toThrow(
+      "pnpm install failed: ERR_PNPM_OUTDATED_LOCKFILE",
+    );
+  });
+
+  it("refuses input that could break out of the shell command", async () => {
+    const { sandbox, commands } = fakeSandbox([]);
+    await expect(prepareWorkspace(sandbox, "acme/x;rm -rf /", SHA)).rejects.toThrow("invalid");
+    await expect(prepareWorkspace(sandbox, "acme/demo-app", "HEAD")).rejects.toThrow("invalid");
+    expect(commands).toHaveLength(0);
   });
 });

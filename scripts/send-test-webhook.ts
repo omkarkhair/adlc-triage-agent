@@ -34,9 +34,9 @@ function readDevVar(name: string): string | undefined {
   return undefined;
 }
 
-async function resolveRepoId(repo: string): Promise<number> {
+async function lookUpRepo(repo: string): Promise<{ id: number; default_branch: string }> {
   if (values["repo-id"]) {
-    return Number(values["repo-id"]);
+    return { id: Number(values["repo-id"]), default_branch: "main" };
   }
   const response = await fetch(`https://api.github.com/repos/${repo}`, {
     headers: { accept: "application/vnd.github+json", "user-agent": "adlc-triage-test-webhook" },
@@ -44,8 +44,7 @@ async function resolveRepoId(repo: string): Promise<number> {
   if (!response.ok) {
     throw new Error(`Could not look up ${repo} (${response.status}); pass --repo-id`);
   }
-  const data = (await response.json()) as { id: number };
-  return data.id;
+  return (await response.json()) as { id: number; default_branch: string };
 }
 
 const secret = readDevVar("GITHUB_WEBHOOK_SECRET");
@@ -61,7 +60,7 @@ if (!values.title) {
 const repo = values.repo ?? "";
 const issueNumber = Number(values.number);
 const body = values["body-file"] ? readFileSync(values["body-file"], "utf8") : "";
-const repoId = await resolveRepoId(repo);
+const { id: repoId, default_branch } = await lookUpRepo(repo);
 const [owner = "", name = ""] = repo.split("/");
 const user = { login: values.author, id: 1, type: "User" };
 
@@ -75,7 +74,7 @@ const payload = {
     user,
     state: "open",
   },
-  repository: { id: repoId, name, full_name: repo, owner: { login: owner } },
+  repository: { id: repoId, name, full_name: repo, default_branch, owner: { login: owner } },
   sender: user,
 };
 

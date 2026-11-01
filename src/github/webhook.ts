@@ -3,6 +3,7 @@ import { createGitHubChannel, type GitHubChannel } from "@flue/github";
 export const WEBHOOK_BODY_LIMIT_BYTES = 1024 * 1024;
 
 const REPO_FULL_NAME = /^[A-Za-z0-9-]{1,39}\/[A-Za-z0-9._-]{1,100}$/;
+const BRANCH = /^[A-Za-z0-9._/-]{1,100}$/;
 
 export interface DeliverySummary {
   deliveryId: string;
@@ -17,6 +18,7 @@ export interface OpenedIssue {
   deliveryId: string;
   agentId: string;
   repo: string;
+  defaultBranch: string;
   issueNumber: number;
   title: string;
   body: string;
@@ -26,7 +28,7 @@ export interface OpenedIssue {
 interface LooseIssuesPayload {
   action?: unknown;
   issue?: { number?: unknown; title?: unknown; body?: unknown; user?: { login?: unknown } };
-  repository?: { full_name?: unknown };
+  repository?: { full_name?: unknown; default_branch?: unknown };
   sender?: { login?: unknown };
 }
 
@@ -57,11 +59,13 @@ export function openedIssue(summary: DeliverySummary, payload: unknown): OpenedI
   if (!summary.repo || !REPO_FULL_NAME.test(summary.repo) || summary.issue === null) {
     return null;
   }
-  const issue = (payload as LooseIssuesPayload).issue ?? {};
+  const { issue = {}, repository = {} } = payload as LooseIssuesPayload;
+  const branch = repository.default_branch;
   return {
     deliveryId: summary.deliveryId,
     agentId: agentIdFor(summary.issue),
     repo: summary.repo,
+    defaultBranch: typeof branch === "string" && BRANCH.test(branch) ? branch : "main",
     issueNumber: summary.issue,
     title: typeof issue.title === "string" ? issue.title : "",
     body: typeof issue.body === "string" ? issue.body : "",
