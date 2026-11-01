@@ -63,6 +63,10 @@ report results honestly.
 - Every `sandbox.exec()` (ours and the agent's) runs in one shared bash session per
   sandbox. Never put `set -e`, `cd` or `export` at the top level of a command:
   wrap multi-line scripts with `strictScript()` and use the `cwd` option.
+- Flue runs an agent's attempts inside one Durable Object alarm, which the
+  platform stops after 15 minutes. Keep `maxAttempts × timeoutMs` below that. When
+  a Workflow waits on `read()`, only an `AgentRunError` is final; rethrow other
+  errors so the step retries and re-attaches.
 - Two-space indent, 100 columns (Biome). No code comments unless requested.
 
 ## Safety rules
