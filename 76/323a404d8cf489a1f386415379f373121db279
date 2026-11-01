@@ -1,0 +1,19 @@
+src/workflow.ts
+  s_16a7c74ee46c60::t_9f5d073b1dc8d9 3,20-21,23-24,123-128
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "76323a404d8cf489a1f386415379f373121db279",
+  "prompts": {},
+  "sessions": {
+    "s_16a7c74ee46c60": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_e778358b8ffeJeJYLEAovqRqp6",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Omkar Khair <omkar@cloudflare.com>"
+    }
+  }
+}
