@@ -1,0 +1,27 @@
+README.md
+  s_16a7c74ee46c60::t_1dc69ad367d6b3 153-160,277-278
+src/activity.ts
+  s_16a7c74ee46c60::t_aeb62c7361fe95 1-65
+src/app.ts
+  s_16a7c74ee46c60::t_29ac3519791e96 4,10
+src/models.ts
+  s_16a7c74ee46c60::t_ab0d445dc99e0e 1,15-17,31-36,89-147,149-185
+tests/triage.test.ts
+  s_16a7c74ee46c60::t_8e99acafc79015 3,5,7-13,273-387
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "80fa3d57664baf631acb22bceccf804a54d9eb8e",
+  "prompts": {},
+  "sessions": {
+    "s_16a7c74ee46c60": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_e778358b8ffeJeJYLEAovqRqp6",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Omkar Khair <omkar@cloudflare.com>"
+    }
+  }
+}
