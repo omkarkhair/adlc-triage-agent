@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { createHmac } from "node:crypto";
 import { createModels } from "@earendil-works/pi-ai";
 import type { FlueEvent } from "@flue/runtime";
@@ -20,7 +21,7 @@ import {
   runTestOnBase,
   type Verification,
 } from "../src/verify";
-import { type ExecLike, prepareWorkspace } from "../src/workspace";
+import { type ExecLike, prepareWorkspace, strictScript } from "../src/workspace";
 
 const SECRET = "test-webhook-secret";
 const ACCOUNT = "0123456789abcdef0123456789abcdef";
@@ -677,5 +678,59 @@ describe("trusted verification", () => {
   it("fails loudly when the reset does not land on the base commit", async () => {
     const { sandbox } = fakeSandbox(() => ({ exitCode: 0, stdout: "e".repeat(40) }));
     await expect(runTestOnBase(sandbox, SHA, test)).rejects.toThrow("Could not reset");
+  });
+});
+
+describe("strictScript in a shared shell session", () => {
+  // Feeds several "exec calls" to one bash process, like the sandbox's default session.
+  const session = (...calls: string[]) =>
+    spawnSync("bash", { input: `${calls.join("\n")}\n`, encoding: "utf8" });
+
+  it("shows the bug: a top-level set -e kills the session at the next failure", () => {
+    const run = session("set -e; echo reset", "false", "echo report");
+    expect(run.status).toBe(1);
+    expect(run.stdout).toBe("reset\n");
+  });
+
+  it("stops at the first failing line of its own script", () => {
+    const run = session(strictScript(["echo one", "false", "echo two"]), "echo exit=$?");
+    expect(run.stdout).toBe("one\nexit=1\n");
+  });
+
+  it("leaves no set -e and no cd behind for later commands", () => {
+    const run = session(
+      strictScript(["cd /tmp", "echo inside"]),
+      "false",
+      'echo "alive flags=$- dir=$PWD"',
+    );
+    expect(run.status).toBe(0);
+    expect(run.stdout).toContain("inside");
+    expect(run.stdout).not.toMatch(/flags=\S*e/);
+    expect(run.stdout).not.toContain("dir=/tmp");
+  });
+
+  it("is used by every multi-line command the helpers send", async () => {
+    const SHA = "f".repeat(40);
+    const commands: string[] = [];
+    const sandbox: FileSandbox = {
+      async exec(command) {
+        commands.push(command);
+        if (command.startsWith("cat ")) return { exitCode: 0, stdout: "{}", stderr: "" };
+        return { exitCode: 0, stdout: `${SHA}\n`, stderr: "" };
+      },
+      async readFile() {
+        return { content: "it()" };
+      },
+      async writeFile() {},
+    };
+    await prepareWorkspace(sandbox, "acme/demo-app", SHA);
+    await runTestOnBase(sandbox, SHA, { path: "tests/a.test.ts", content: "it()", sha256: "x" });
+    for (const command of commands) {
+      if (command.includes("set -e")) {
+        expect(command.startsWith("(\nset -e\n")).toBe(true);
+        expect(command.endsWith("\n)")).toBe(true);
+      }
+    }
+    expect(commands.filter((c) => c.includes("set -e"))).toHaveLength(2);
   });
 });
