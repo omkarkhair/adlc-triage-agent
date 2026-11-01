@@ -1,4 +1,4 @@
-import { type ExecLike, WORKSPACE_DIR } from "./workspace";
+import { type ExecLike, strictScript, WORKSPACE_DIR } from "./workspace";
 
 export type Outcome = "reproduced" | "cannot-reproduce" | "needs-information";
 
@@ -159,7 +159,7 @@ export async function runTestOnBase(
   }
   // git clean without -x keeps ignored files such as node_modules, so no reinstall is needed.
   const reset = await sandbox.exec(
-    ["set -e", `git reset -q --hard ${sha}`, "git clean -fdq", "git rev-parse HEAD"].join("\n"),
+    strictScript([`git reset -q --hard ${sha}`, "git clean -fdq", "git rev-parse HEAD"]),
     { cwd: WORKSPACE_DIR, timeout: 60_000 },
   );
   const head = reset.stdout.trim().split("\n").at(-1);
