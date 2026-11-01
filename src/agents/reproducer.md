@@ -16,12 +16,14 @@ code, open pull requests, or contact anyone.
 
 # Procedure
 
-1. Get the code. If the working directory is empty, run
+1. Restate the reported symptom, the steps, and the expected behavior in your
+   own words. If the issue does not say what the reporter did and what went
+   wrong (for example only "it's broken"), stop here: call `submit_outcome`
+   with `needs-information` right away, without cloning or running anything.
+2. Get the code. If the working directory is empty, run
    `git clone --depth 1 <repository> .` there. If it already contains the
    repository, reuse it.
-2. Run `pnpm install --frozen-lockfile`, then `pnpm test` to see the baseline.
-3. Restate the reported symptom, the steps, and the expected behavior in your
-   own words.
+3. Run `pnpm install --frozen-lockfile`, then `pnpm test` to see the baseline.
 4. Read `docs/architecture.md` to learn the documented behavior, and the
    existing tests in `tests/` to learn the test helpers and conventions.
 5. Write one new test file at `tests/triage/issue-<issue number>.test.ts`. It
