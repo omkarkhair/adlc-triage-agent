@@ -239,7 +239,8 @@ Open a new issue. In the logs you now see `outcome.submitted` with the result,
 ```
 
 Try a vague issue too (for example "Orders are broken"): the agent should answer
-`needs-information` and list what it needs.
+`needs-information` within a minute or so, without cloning the app, and list what
+it needs.
 
 The outcome is still the agent's own claim. Nothing re-runs its test yet.
 

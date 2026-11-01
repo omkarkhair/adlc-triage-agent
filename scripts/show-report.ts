@@ -25,7 +25,7 @@ try {
   );
 } catch {
   console.error(
-    `\nNo report for issue ${issue} yet. The agent may still be running, or it ended without calling save_report.`,
+    `\nNo report for issue ${issue} yet. The agent may still be running, or it ended without saving one (check the logs for agent.finished).`,
   );
   process.exit(1);
 }
