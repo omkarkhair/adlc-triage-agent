@@ -47,7 +47,7 @@ export async function sha256Hex(text: string): Promise<string> {
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-function clean(text: string, max: number): string {
+export function clean(text: string, max: number): string {
   return text.replace(ANSI, "").trim().slice(0, max);
 }
 
@@ -154,8 +154,14 @@ export async function runTestOnBase(
   sha: string,
   test: TestFile,
 ): Promise<Verification> {
-  if (!COMMIT_SHA.test(sha) || !isAllowedTestPath(test.path)) {
-    throw new Error("Refusing to verify an invalid commit or test path");
+  await resetWorkspace(sandbox, sha);
+  return runTest(sandbox, test);
+}
+
+/** Puts the workspace back at `sha` and removes untracked files (node_modules stays). */
+export async function resetWorkspace(sandbox: ExecLike, sha: string): Promise<void> {
+  if (!COMMIT_SHA.test(sha)) {
+    throw new Error("Refusing to reset to an invalid commit");
   }
   // git clean without -x keeps ignored files such as node_modules, so no reinstall is needed.
   const reset = await sandbox.exec(
@@ -166,7 +172,13 @@ export async function runTestOnBase(
   if (reset.exitCode !== 0 || head !== sha) {
     throw new Error(`Could not reset the workspace to ${sha}: ${clean(reset.stderr, 300)}`);
   }
+}
 
+/** Writes the test file into the workspace as it is and runs only that file. */
+export async function runTest(sandbox: FileSandbox, test: TestFile): Promise<Verification> {
+  if (!isAllowedTestPath(test.path)) {
+    throw new Error("Refusing to run a test outside tests/");
+  }
   const target = `${WORKSPACE_DIR}/${test.path}`;
   await sandbox.exec(`mkdir -p '${target.slice(0, target.lastIndexOf("/"))}'`);
   await sandbox.writeFile(target, test.content, { encoding: "utf-8" });

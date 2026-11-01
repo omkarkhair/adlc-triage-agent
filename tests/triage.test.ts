@@ -4,6 +4,16 @@ import { createModels } from "@earendil-works/pi-ai";
 import type { FlueEvent } from "@flue/runtime";
 import { describe, expect, it, vi } from "vitest";
 import { activityRecord } from "../src/activity";
+import {
+  type Candidate,
+  classifyChange,
+  collectChanges,
+  type FixChanges,
+  parseStatus,
+  renderCandidate,
+  saveCandidate,
+  verifyCandidate,
+} from "../src/candidate";
 import { commentMarker, GitHubClient } from "../src/github/client";
 import { createTriageChannel, type OpenedIssue, summarizeDelivery } from "../src/github/webhook";
 import {
@@ -732,5 +742,176 @@ describe("strictScript in a shared shell session", () => {
       }
     }
     expect(commands.filter((c) => c.includes("set -e"))).toHaveLength(2);
+  });
+});
+
+describe("fix candidate", () => {
+  const SHA = "9".repeat(40);
+  const TEST = "tests/triage/issue-7.test.ts";
+  const test = { path: TEST, content: "it('dedupes')", sha256: "t".repeat(64) };
+  const report = (status: "red" | "green") =>
+    JSON.stringify(
+      status === "red"
+        ? {
+            numFailedTests: 1,
+            numPassedTests: 0,
+            testResults: [
+              {
+                status: "failed",
+                assertionResults: [
+                  { status: "failed", fullName: "dedupes", failureMessages: ["AssertionError: x"] },
+                ],
+              },
+            ],
+          }
+        : {
+            numFailedTests: 0,
+            numPassedTests: 1,
+            testResults: [{ status: "passed", assertionResults: [{ status: "passed" }] }],
+          },
+    );
+
+  it("applies src/ changes and new migrations, and ignores the rest", () => {
+    const entries = parseStatus(
+      [
+        " M src/domain/orders.ts",
+        " D src/old.ts",
+        "?? migrations/0003_add_index.sql",
+        " M migrations/0001_init.sql",
+        `?? ${TEST}`,
+        " M tests/orders.test.ts",
+        " M package.json",
+        "R  src/a.ts -> src/b.ts",
+      ].join("\n"),
+    );
+    expect(entries.map((entry) => [entry.path, classifyChange(entry, TEST)])).toEqual([
+      ["src/domain/orders.ts", "apply"],
+      ["src/old.ts", "apply"],
+      ["migrations/0003_add_index.sql", "apply"],
+      ["migrations/0001_init.sql", "an existing migration must not be edited"],
+      [TEST, "regression-test"],
+      ["tests/orders.test.ts", "only src/ and new migrations/ files are applied"],
+      ["package.json", "only src/ and new migrations/ files are applied"],
+      ["src/a.ts", "apply"],
+      ["src/b.ts", "apply"],
+    ]);
+    expect(classifyChange({ status: "??", path: "src/../x.ts" }, TEST)).toBe(
+      "unsupported file name",
+    );
+  });
+
+  function fakeSandbox(options: { greenAfterFix?: boolean; failingCheck?: string } = {}) {
+    const files = new Map<string, string>([["/workspace/src/domain/orders.ts", "fixed code"]]);
+    const commands: string[] = [];
+    let fixed = false;
+    let lastRun: "red" | "green" = "red";
+    const sandbox: FileSandbox = {
+      async exec(command) {
+        commands.push(command);
+        const ok = (stdout = "") => ({ exitCode: 0, stdout, stderr: "" });
+        if (command.startsWith("git -c core.quotePath")) {
+          return ok(` M src/domain/orders.ts\n?? ${TEST}\n M README.md\n`);
+        }
+        if (command.includes("git reset")) {
+          fixed = false;
+          return ok(`${SHA}\n`);
+        }
+        if (command.includes("vitest run")) {
+          lastRun = fixed && options.greenAfterFix !== false ? "green" : "red";
+          return { exitCode: lastRun === "green" ? 0 : 1, stdout: "", stderr: "" };
+        }
+        if (command.startsWith("cat ")) return ok(report(lastRun));
+        if (command.includes("git diff --cached")) return ok("diff --git a/src/domain/orders.ts\n");
+        if (options.failingCheck && command.endsWith(options.failingCheck)) {
+          return { exitCode: 1, stdout: "\u001b[31m1 error\u001b[39m", stderr: "" };
+        }
+        return ok();
+      },
+      async readFile(path) {
+        const content = files.get(path);
+        if (content === undefined) throw new Error(`no ${path}`);
+        return { content };
+      },
+      async writeFile(path, content) {
+        files.set(path, content);
+        if (path.includes("/src/")) fixed = true;
+      },
+    };
+    return { sandbox, commands, files };
+  }
+
+  it("collects only the files the fix may contain", async () => {
+    const { sandbox } = fakeSandbox();
+    await expect(collectChanges(sandbox, TEST)).resolves.toEqual({
+      files: [{ path: "src/domain/orders.ts", content: "fixed code" }],
+      ignored: ["README.md (only src/ and new migrations/ files are applied)"],
+    });
+  });
+
+  const changes: FixChanges = {
+    files: [{ path: "src/domain/orders.ts", content: "fixed code" }],
+    ignored: [],
+  };
+
+  it("verifies a fix that turns the unchanged test green and passes every check", async () => {
+    const { sandbox, commands } = fakeSandbox();
+    const candidate = await verifyCandidate(sandbox, SHA, test, changes);
+    expect(candidate).toMatchObject({ status: "verified", baseSha: SHA, testFile: TEST });
+    expect(candidate.red?.status).toBe("red");
+    expect(candidate.green?.status).toBe("green");
+    expect(candidate.checks.map((check) => [check.name, check.exitCode])).toEqual([
+      ["lint", 0],
+      ["typecheck", 0],
+      ["test", 0],
+      ["build", 0],
+    ]);
+    expect(candidate.digest).toMatch(/^[0-9a-f]{64}$/);
+    expect(candidate.files.map((file) => file.path)).toEqual(["src/domain/orders.ts", TEST]);
+    expect(commands.some((c) => c.includes(`git add -A -- 'src/domain/orders.ts' '${TEST}'`))).toBe(
+      true,
+    );
+    expect(commands.filter((c) => c.endsWith("pnpm lint"))[0]).toMatch(/^CI=1 /);
+  });
+
+  it("rejects a fix that does not turn the test green", async () => {
+    const { sandbox } = fakeSandbox({ greenAfterFix: false });
+    const candidate = await verifyCandidate(sandbox, SHA, test, changes);
+    expect(candidate.status).toBe("failed");
+    expect(candidate.reason).toContain("does not pass with the fix");
+    expect(candidate.checks).toEqual([]);
+    expect(candidate.digest).toBeNull();
+  });
+
+  it("rejects a fix when a project check fails, and keeps its output", async () => {
+    const { sandbox } = fakeSandbox({ failingCheck: "pnpm typecheck" });
+    const candidate = await verifyCandidate(sandbox, SHA, test, changes);
+    expect(candidate).toMatchObject({ status: "failed", reason: "checks failed: typecheck" });
+    expect(candidate.checks.find((check) => check.name === "typecheck")?.output).toBe("1 error");
+  });
+
+  it("rejects an empty fix without running anything", async () => {
+    const { sandbox, commands } = fakeSandbox();
+    const candidate = await verifyCandidate(sandbox, SHA, test, { files: [], ignored: [] });
+    expect(candidate.status).toBe("failed");
+    expect(commands).toEqual([]);
+  });
+
+  it("stores the patch and the record, and renders a comment with the digest", async () => {
+    const { sandbox } = fakeSandbox();
+    const candidate: Candidate = await verifyCandidate(sandbox, SHA, test, changes);
+    const put = vi.fn(async () => {});
+    await expect(saveCandidate({ put }, "issue-7", candidate)).resolves.toEqual({
+      patch: "runs/issue-7/candidate.patch",
+      record: "runs/issue-7/candidate.json",
+    });
+    expect(put).toHaveBeenCalledTimes(2);
+    const comment = renderCandidate("issue-7", candidate, {
+      summary: "Reuse the order for a repeated key.",
+      rationale: "The docs say so.",
+    });
+    expect(comment).toContain(`sha256:${candidate.digest}`);
+    expect(comment).toContain("| `pnpm typecheck` | pass |");
+    expect(comment).toContain("regression test with the fix is green | pass");
+    expect(comment).toContain("```diff");
   });
 });
