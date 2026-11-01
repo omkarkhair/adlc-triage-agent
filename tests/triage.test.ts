@@ -1,8 +1,16 @@
 import { createHmac } from "node:crypto";
 import { createModels } from "@earendil-works/pi-ai";
+import type { FlueEvent } from "@flue/runtime";
 import { describe, expect, it, vi } from "vitest";
+import { activityRecord } from "../src/activity";
 import { createTriageChannel, type OpenedIssue, summarizeDelivery } from "../src/github/webhook";
-import { modelFor, sharedGatewayFrom, sharedGatewayProvider } from "../src/models";
+import {
+  modelFor,
+  sharedGatewayFrom,
+  sharedGatewayProvider,
+  withDeadline,
+  withModelTimeout,
+} from "../src/models";
 
 const SECRET = "test-webhook-secret";
 const ACCOUNT = "0123456789abcdef0123456789abcdef";
@@ -260,5 +268,120 @@ describe("sharedGatewayProvider", () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+});
+
+describe("model request deadline", () => {
+  it("passes a fast result through", async () => {
+    await expect(withDeadline(async () => "ok", 1_000)).resolves.toBe("ok");
+  });
+
+  it("fails a request that never answers and aborts it", async () => {
+    let aborted = false;
+    const never = (signal: AbortSignal) =>
+      new Promise<string>(() => {
+        signal.addEventListener("abort", () => {
+          aborted = true;
+        });
+      });
+    await expect(withDeadline(never, 20)).rejects.toThrow("timed out");
+    expect(aborted).toBe(true);
+  });
+
+  it("fails a streamed response whose body stops arriving", async () => {
+    const stalled = new ReadableStream<Uint8Array>({
+      start(stream) {
+        stream.enqueue(new TextEncoder().encode("data: {}\n\n"));
+      },
+    });
+    const response = await withDeadline(
+      async () => new Response(stalled, { headers: { "cf-aig-log-id": "log-1" } }),
+      30,
+    );
+    expect(response.headers.get("cf-aig-log-id")).toBe("log-1");
+    await expect(response.text()).rejects.toThrow("timed out");
+  });
+
+  it("lets a complete streamed body through", async () => {
+    const response = await withDeadline(async () => new Response("all of it"), 1_000);
+    await expect(response.text()).resolves.toBe("all of it");
+  });
+
+  it("adds an abort signal to every Workers AI binding call", async () => {
+    const run = vi.fn(async () => ({ response: "ok" }));
+    const result = await withModelTimeout({ run }, 1_000).run("@cf/m", { prompt: "hi" }, { a: 1 });
+    expect(result).toEqual({ response: "ok" });
+    const options = (run.mock.calls[0] as unknown[])[2] as { a: number; signal: unknown };
+    expect(options.a).toBe(1);
+    expect(options.signal).toBeInstanceOf(AbortSignal);
+  });
+});
+
+describe("activityRecord", () => {
+  const base = { v: 3, eventIndex: 0, timestamp: "", instanceId: "issue-7" } as const;
+  const record = (event: object) => activityRecord({ ...base, ...event } as FlueEvent);
+
+  it("logs attempts, turn starts and tool calls", () => {
+    expect(
+      record({
+        type: "submission_running",
+        submissionId: "s",
+        kind: "dispatch",
+        attemptCount: 2,
+        maxAttempts: 2,
+      }),
+    ).toEqual({ event: "agent.attempt", agentId: "issue-7", attempt: 2, maxAttempts: 2 });
+    expect(record({ type: "turn_start", turnId: "t1", purpose: "agent" })).toEqual({
+      event: "turn.started",
+      agentId: "issue-7",
+      turnId: "t1",
+    });
+    expect(
+      record({ type: "tool", toolName: "bash", toolCallId: "c", isError: false, durationMs: 5 }),
+    ).toEqual({
+      event: "tool.finished",
+      agentId: "issue-7",
+      tool: "bash",
+      isError: false,
+      durationMs: 5,
+    });
+  });
+
+  it("summarizes a finished turn without its content", () => {
+    expect(
+      record({
+        type: "turn",
+        turnId: "t1",
+        purpose: "agent",
+        durationMs: 900,
+        isError: false,
+        request: { providerId: "p", providerName: "p", requestedModel: "m", api: "a" },
+        response: {
+          finishReason: "toolUse",
+          usage: { output: 42 },
+          output: {
+            role: "assistant",
+            content: [
+              { type: "thinking", thinking: "secret plan" },
+              { type: "toolCall", id: "c", name: "bash", arguments: { command: "ls" } },
+            ],
+          },
+        },
+      }),
+    ).toEqual({
+      event: "turn.finished",
+      agentId: "issue-7",
+      turnId: "t1",
+      durationMs: 900,
+      finishReason: "toolUse",
+      toolCalls: ["bash"],
+      outputTokens: 42,
+      isError: false,
+      error: null,
+    });
+  });
+
+  it("ignores streaming deltas", () => {
+    expect(record({ type: "text_delta", text: "hi" })).toBeNull();
   });
 });
