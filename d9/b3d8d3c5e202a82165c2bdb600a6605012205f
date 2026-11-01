@@ -1,0 +1,23 @@
+src/agents/fixer.ts
+  s_16a7c74ee46c60::t_ed31a65c6c398d 1-123
+src/workflow.ts
+  s_16a7c74ee46c60::t_c3d7775bdd9dfc 5,7-13,18-24,39-42,67-70,73,80,92,154,157-159,161,206-311,318-319
+wrangler.jsonc
+  s_16a7c74ee46c60::t_4a6c2a280055d4 21,24-27
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "d9b3d8d3c5e202a82165c2bdb600a6605012205f",
+  "prompts": {},
+  "sessions": {
+    "s_16a7c74ee46c60": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_e778358b8ffeJeJYLEAovqRqp6",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Omkar Khair <omkar@cloudflare.com>"
+    }
+  }
+}
