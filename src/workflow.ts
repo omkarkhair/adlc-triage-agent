@@ -1,6 +1,6 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
 import { getSandbox, type Sandbox } from "@cloudflare/sandbox";
-import { init } from "@flue/runtime";
+import { AgentRunError, init } from "@flue/runtime";
 import * as v from "valibot";
 import { OUTCOME_PART, Reproducer, type ReproducerData } from "./agents/reproducer";
 import { commentMarker, GitHubClient } from "./github/client";
@@ -18,9 +18,11 @@ const SETUP = {
   retries: { limit: 2, delay: "10 seconds", backoff: "constant" },
   timeout: "10 minutes",
 } as const;
+// A retry of a "wait" step reads the same agent run again (read() re-attaches), so a dropped
+// connection doesn't lose the result.
 const AGENT = {
-  retries: { limit: 1, delay: "10 seconds", backoff: "constant" },
-  timeout: "25 minutes",
+  retries: { limit: 3, delay: "30 seconds", backoff: "constant" },
+  timeout: "20 minutes",
 } as const;
 
 interface AgentResult {
@@ -121,7 +123,12 @@ export class TriageWorkflow extends WorkflowEntrypoint<Env, OpenedIssue> {
             ? { outcome: parsed.output, failure: null }
             : { outcome: null, failure: "the agent stopped without submitting an outcome" };
         } catch (error) {
-          return { outcome: null, failure: describe(error) };
+          // The agent run itself failed: that is the answer. Anything else (a dropped connection,
+          // a restarted Durable Object) is thrown so the step retries and reads again.
+          if (error instanceof AgentRunError) {
+            return { outcome: null, failure: describe(error) };
+          }
+          throw error;
         }
       });
 

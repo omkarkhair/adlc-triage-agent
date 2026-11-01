@@ -100,4 +100,6 @@ export function Reproducer({ id }: AgentProps) {
   return `${procedure}\n${context}\n`;
 }
 
-Reproducer.durability = { maxAttempts: 2, timeoutMs: 10 * 60_000 };
+// Flue runs all attempts inside one Durable Object alarm, which may last at most 15 minutes,
+// so maxAttempts × timeoutMs must stay below that.
+Reproducer.durability = { maxAttempts: 2, timeoutMs: 7 * 60_000 };
