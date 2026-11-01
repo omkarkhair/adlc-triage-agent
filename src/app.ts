@@ -1,11 +1,13 @@
 import { env } from "cloudflare:workers";
 import { dispatch } from "@flue/runtime";
 import { Hono } from "hono";
+import { logAgentActivity } from "./activity";
 import { Reproducer, type ReproducerData } from "./agents/reproducer";
 import { createTriageChannel, type OpenedIssue } from "./github/webhook";
 import { registerModelProviders } from "./models";
 
 registerModelProviders(env);
+logAgentActivity();
 
 async function startReproducer(issue: OpenedIssue): Promise<void> {
   const initialData: ReproducerData = { repo: issue.repo, issueNumber: issue.issueNumber };
