@@ -6,7 +6,8 @@ import { OUTCOME_PART, Reproducer, type ReproducerData } from "./agents/reproduc
 import { commentMarker, GitHubClient } from "./github/client";
 import type { OpenedIssue } from "./github/webhook";
 import { ReproOutcome } from "./outcome";
-import { renderReport } from "./reports";
+import { renderReport, saveReport } from "./reports";
+import { collectTestFile, decideOutcome, runTestOnBase, type Verification } from "./verify";
 import { prepareWorkspace } from "./workspace";
 
 const QUICK = {
@@ -65,6 +66,8 @@ export class TriageWorkflow extends WorkflowEntrypoint<Env, OpenedIssue> {
 
     let baseSha: string | null = null;
     let result: AgentResult = { outcome: null, failure: null };
+    let verification: Verification | null = null;
+    let testSource: string | null = null;
     try {
       // 1. Pin the commit the whole run works on.
       const sha = await step.do("resolve base commit", QUICK, () =>
@@ -121,26 +124,70 @@ export class TriageWorkflow extends WorkflowEntrypoint<Env, OpenedIssue> {
           return { outcome: null, failure: describe(error) };
         }
       });
+
+      // 4. Don't trust the claim: re-run the agent's test on a clean checkout of the commit.
+      const testFile = result.outcome?.testFile;
+      if (result.outcome?.outcome === "reproduced" && testFile) {
+        try {
+          const test = await step.do("collect test", QUICK, () =>
+            collectTestFile(sandbox, testFile),
+          );
+          log(runId, "test.collected", { testFile: test.path, sha256: test.sha256 });
+          testSource = test.content;
+          verification = await step.do("verify on base commit", SETUP, () =>
+            runTestOnBase(sandbox, sha, test),
+          );
+        } catch (error) {
+          verification = {
+            status: "invalid",
+            reason: describe(error),
+            testFile,
+            testSha256: null,
+            passed: 0,
+            failed: 0,
+            failures: [],
+          };
+        }
+        log(runId, "verification.finished", {
+          status: verification.status,
+          reason: verification.reason,
+        });
+      }
     } catch (error) {
       result = { outcome: null, failure: describe(error) };
     }
 
-    // 4. Tell the reporter what happened.
-    if (result.outcome) {
+    // 5. The harness decides the outcome, stores the verified report, and tells the reporter.
+    const outcome = result.outcome;
+    const verdict = outcome ? decideOutcome(outcome.outcome, verification) : null;
+    if (outcome && verdict) {
       const context = { agentId: runId, repo: issue.repo, issueNumber: issue.issueNumber };
-      const report = renderReport(context, result.outcome, new Date().toISOString());
+      const verified = { verdict, verification, testSource };
+      try {
+        const key = await step.do("save report", QUICK, () =>
+          saveReport(this.env.REPORTS, context, outcome, new Date(), verified),
+        );
+        log(runId, "report.saved", { key });
+      } catch (error) {
+        log(runId, "report.failed", { error: describe(error) });
+      }
+      const report = renderReport(context, outcome, new Date().toISOString(), verified);
       await comment(
         "outcome",
-        `${report}\n---\n_Written by an AI agent on commit \`${baseSha?.slice(0, 7)}\`. Its claim has not been verified yet._`,
+        `${report}\n---\n_Written by an AI agent and checked by the triage harness on commit \`${baseSha?.slice(0, 7)}\`._`,
       );
     } else {
       await comment("outcome", `Triage could not finish: ${result.failure ?? "unknown error"}.`);
     }
 
-    log(runId, "run.finished", {
-      outcome: result.outcome?.outcome ?? null,
+    const summary = {
+      baseSha,
+      claimed: outcome?.outcome ?? null,
+      outcome: verdict?.outcome ?? null,
+      verified: verdict?.verified ?? false,
       failure: result.failure,
-    });
-    return { baseSha, outcome: result.outcome?.outcome ?? null, failure: result.failure };
+    };
+    log(runId, "run.finished", summary);
+    return summary;
   }
 }
