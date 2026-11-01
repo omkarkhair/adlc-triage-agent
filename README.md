@@ -14,6 +14,7 @@ you fall behind (commit or stash your work, check out the branch, redeploy).
 | **2. Structured outcome**   | The agent must submit a typed, validated result; the report is built from it.                                               | `dev/checkpoint-2` |
 | **3. Workflow and comment** | A new issue starts one durable run that checks out your fork at a pinned commit, runs the agent, and comments on the issue. | `dev/checkpoint-3` |
 | **4. Trusted verification** | The run re-runs the agent's test on a clean checkout and only confirms a reproduction it saw fail.                          | `dev/checkpoint-4` |
+| **5. Fix and verify**       | A second agent proposes a fix; a fresh sandbox checks red to green and every project check before it counts.                | `dev/checkpoint-5` |
 
 ## Stack
 
@@ -355,6 +356,57 @@ the result, the failing assertion, and the test the agent wrote. If the claim wa
 downgraded you see `"verified":false` and the reason, for example "every test
 passed" or "the test file failed to load".
 
+## Checkpoint 5: fix and verify
+
+With a verified reproduction, the run now asks a second agent, the **Fixer**, for
+the smallest fix. As in checkpoint 4, the model's word is not enough. A fix only
+becomes a **candidate** when trusted code has checked it:
+
+1. **Fix:** the Fixer works in the issue's sandbox, starting from the base commit
+   plus the verified regression test. It reads the demo app's
+   `docs/practices.md` and `docs/architecture.md`, changes the code, runs the
+   checks, and ends with a typed `submit_fix` (summary, rationale, files).
+2. **Collect:** trusted code lists what changed (`src/candidate.ts`, provided).
+   Only files under `src/` and **new** files under `migrations/` are taken. Any
+   other change, including an edit to a test, is ignored and listed in the report.
+3. **Verify in a fresh sandbox** (`issue-<n>-verify`), which the agent never
+   touched: check out the base commit, install, run the **unchanged** regression
+   test (must be red), apply the fix, run it again (must be green), then run the
+   project's own checks: `pnpm lint`, `pnpm typecheck`, `pnpm test`, `pnpm build`.
+4. **Record:** if everything passed, the patch is stored in R2 as
+   `candidate.patch` together with `candidate.json`, and its SHA-256 (the
+   **digest**) names this exact candidate. A second comment on the issue shows the
+   result, the checks, the files and the patch. A failed fix gets a comment with
+   the reason and no candidate.
+
+Why a second sandbox? The first one ran an agent's commands for minutes. It may
+hold changed shell settings, edited files in `node_modules`, or files outside the
+repository, none of which `git reset` undoes. A sandbox only trusted code has
+used can't carry any of that into the result.
+
+You add `src/agents/fixer.ts` and `src/agents/fixer.md`, add the fix steps to
+`src/workflow.ts`, and in `wrangler.jsonc` add a migration for the new agent class
+and allow more containers (each run now briefly uses two).
+
+```sh
+pnpm run deploy
+```
+
+Open a real issue. After the checkpoint 4 lines, the logs show the Fixer's turns
+and then:
+
+```text
+fix.submitted      {"agentId":"issue-14","result":"fixed","files":["src/…"]}
+fix.collected      {"runId":"issue-14","files":["src/…"],"ignored":[]}
+candidate.checked  {"runId":"issue-14","status":"verified","digest":"5e0a…","checks":{"lint":0,"typecheck":0,"test":0,"build":0}}
+candidate.saved    {"runId":"issue-14","patch":"runs/issue-14/candidate.patch"}
+run.finished       {"runId":"issue-14","outcome":"reproduced","verified":true,"fix":"verified","digest":"5e0a…"}
+```
+
+Read the patch with `pnpm report 14 candidate.patch` (or `candidate.json` for the
+whole record). Nothing has been pushed to your repository yet; checkpoint 6 turns
+a verified candidate into a draft pull request.
+
 ## Sending test issues
 
 ```sh
@@ -370,17 +422,17 @@ comments on the issue, so use the number of a real issue on your fork. Without `
 
 ## Commands
 
-| Command             | What it does                                                               |
-| ------------------- | -------------------------------------------------------------------------- |
-| `pnpm dev`          | Local dev server at http://localhost:5173.                                 |
-| `pnpm run deploy`   | Build and deploy the Worker.                                               |
-| `pnpm webhook:send` | Send a signed fake issue webhook (`--dry-run` to print it).                |
-| `pnpm report <n>`   | Print the agent's saved report for issue `<n>` from R2 (checkpoint 1+).    |
-| `pnpm lint`         | Biome check (`pnpm format` to fix).                                        |
-| `pnpm typecheck`    | `tsc --noEmit`.                                                            |
-| `pnpm test`         | Unit tests.                                                                |
-| `pnpm build`        | Production bundle into `dist/`.                                            |
-| `pnpm cf-typegen`   | Regenerate `src/worker-configuration.d.ts` after editing `wrangler.jsonc`. |
+| Command             | What it does                                                                   |
+| ------------------- | ------------------------------------------------------------------------------ |
+| `pnpm dev`          | Local dev server at http://localhost:5173.                                     |
+| `pnpm run deploy`   | Build and deploy the Worker.                                                   |
+| `pnpm webhook:send` | Send a signed fake issue webhook (`--dry-run` to print it).                    |
+| `pnpm report <n>`   | Print the report for issue `<n>` from R2 (cp1+); add `candidate.patch` (cp5+). |
+| `pnpm lint`         | Biome check (`pnpm format` to fix).                                            |
+| `pnpm typecheck`    | `tsc --noEmit`.                                                                |
+| `pnpm test`         | Unit tests.                                                                    |
+| `pnpm build`        | Production bundle into `dist/`.                                                |
+| `pnpm cf-typegen`   | Regenerate `src/worker-configuration.d.ts` after editing `wrangler.jsonc`.     |
 
 ## Layout
 
@@ -392,10 +444,13 @@ src/activity.ts            provided: logs each attempt, model turn and tool call
 src/github/client.ts       provided: GitHub API calls (pin a commit, comment on an issue)
 src/workspace.ts           provided: check out the pinned commit in the sandbox, install
 src/verify.ts              provided: re-run the agent's test on the base commit, decide
+src/candidate.ts           provided: collect a fix, check it in a fresh sandbox, store it
 src/cloudflare.ts          Worker-level exports (cp1: the Sandbox class; cp3: the Workflow)
-src/workflow.ts            cp3: the durable triage run, one per issue; cp4: verification
+src/workflow.ts            cp3: the durable triage run, one per issue; cp4: verification; cp5: fix
 src/agents/reproducer.ts   cp1: the agent (model, sandbox, tool); cp2: submit_outcome
 src/agents/reproducer.md   cp1: the agent's instructions
+src/agents/fixer.ts        cp5: the Fixer agent and its submit_fix tool
+src/agents/fixer.md        cp5: the Fixer's instructions
 src/reports.ts             cp1: writes the report to R2
 src/outcome.ts             cp2: the outcome schema and its extra checks
 Dockerfile                 provided: sandbox image, used from cp1
