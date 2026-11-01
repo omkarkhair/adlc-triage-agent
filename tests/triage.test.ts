@@ -12,6 +12,14 @@ import {
   withDeadline,
   withModelTimeout,
 } from "../src/models";
+import {
+  collectTestFile,
+  decideOutcome,
+  type FileSandbox,
+  interpretVitest,
+  runTestOnBase,
+  type Verification,
+} from "../src/verify";
 import { type ExecLike, prepareWorkspace } from "../src/workspace";
 
 const SECRET = "test-webhook-secret";
@@ -530,5 +538,144 @@ describe("prepareWorkspace", () => {
     await expect(prepareWorkspace(sandbox, "acme/x;rm -rf /", SHA)).rejects.toThrow("invalid");
     await expect(prepareWorkspace(sandbox, "acme/demo-app", "HEAD")).rejects.toThrow("invalid");
     expect(commands).toHaveLength(0);
+  });
+});
+
+describe("trusted verification", () => {
+  const SHA = "d".repeat(40);
+  const test = { path: "tests/triage/issue-7.test.ts", content: "it()", sha256: "abc" };
+  const vitest = (suite: object, counts: object = {}) =>
+    JSON.stringify({ numFailedTests: 0, numPassedTests: 0, testResults: [suite], ...counts });
+
+  it("calls an assertion failure red", () => {
+    const raw = vitest(
+      {
+        status: "failed",
+        message: "",
+        assertionResults: [
+          {
+            fullName: "orders dedupe",
+            status: "failed",
+            failureMessages: ["\u001b[31mAssertionError: expected 2 to be 1\u001b[39m"],
+          },
+        ],
+      },
+      { numFailedTests: 1 },
+    );
+    const result = interpretVitest(raw, 1, test);
+    expect(result.status).toBe("red");
+    expect(result.failures).toEqual([
+      { name: "orders dedupe", message: "AssertionError: expected 2 to be 1" },
+    ]);
+  });
+
+  it("does not count a crash as a reproduction", () => {
+    const raw = vitest(
+      {
+        status: "failed",
+        assertionResults: [
+          { status: "failed", failureMessages: ["TypeError: x is not a function"] },
+        ],
+      },
+      { numFailedTests: 1 },
+    );
+    expect(interpretVitest(raw, 1, test)).toMatchObject({
+      status: "invalid",
+      reason: "the test failed with an error, not a failed assertion",
+    });
+  });
+
+  it("calls a test file that fails to load invalid", () => {
+    const raw = vitest({
+      status: "failed",
+      message: "Cannot find module './nope'",
+      assertionResults: [],
+    });
+    expect(interpretVitest(raw, 1, test).reason).toContain("Cannot find module");
+  });
+
+  it("calls an all-passing run green and a missing report invalid", () => {
+    const raw = vitest(
+      { status: "passed", assertionResults: [{ status: "passed" }] },
+      { numPassedTests: 1 },
+    );
+    expect(interpretVitest(raw, 0, test).status).toBe("green");
+    expect(interpretVitest("", 1, test).status).toBe("invalid");
+  });
+
+  it("only keeps a claimed reproduction that was red", () => {
+    const red = { status: "red", reason: "1 test(s) failed" } as Verification;
+    const green = { status: "green", reason: "every test passed" } as Verification;
+    expect(decideOutcome("reproduced", red)).toMatchObject({
+      outcome: "reproduced",
+      verified: true,
+    });
+    expect(decideOutcome("reproduced", green)).toMatchObject({
+      outcome: "cannot-reproduce",
+      claimed: "reproduced",
+      verified: false,
+      note: "Downgraded from reproduced: every test passed.",
+    });
+    expect(decideOutcome("reproduced", null).outcome).toBe("cannot-reproduce");
+    expect(decideOutcome("needs-information", null)).toMatchObject({
+      outcome: "needs-information",
+      verified: false,
+    });
+  });
+
+  function fakeSandbox(handler: (command: string) => { exitCode: number; stdout?: string }) {
+    const commands: string[] = [];
+    const files = new Map<string, string>([["/workspace/tests/triage/issue-7.test.ts", "it()"]]);
+    const sandbox: FileSandbox = {
+      async exec(command) {
+        commands.push(command);
+        return { stdout: "", stderr: "", ...handler(command) };
+      },
+      async readFile(path) {
+        const content = files.get(path);
+        if (content === undefined) throw new Error("not found");
+        return { content };
+      },
+      async writeFile(path, content) {
+        files.set(path, content);
+      },
+    };
+    return { sandbox, commands, files };
+  }
+
+  it("collects the test with its digest and refuses paths outside tests/", async () => {
+    const { sandbox } = fakeSandbox(() => ({ exitCode: 0 }));
+    const file = await collectTestFile(sandbox, "tests/triage/issue-7.test.ts");
+    expect(file.content).toBe("it()");
+    expect(file.sha256).toMatch(/^[0-9a-f]{64}$/);
+    await expect(collectTestFile(sandbox, "src/index.ts")).rejects.toThrow("under tests/");
+    await expect(collectTestFile(sandbox, "tests/../src/x.test.ts")).rejects.toThrow(
+      "under tests/",
+    );
+  });
+
+  it("resets to the base commit, writes back only the test, and reads vitest's report", async () => {
+    const report = vitest(
+      { status: "passed", assertionResults: [{ status: "passed" }] },
+      { numPassedTests: 1 },
+    );
+    const { sandbox, commands, files } = fakeSandbox((command) => {
+      if (command.includes("git reset")) return { exitCode: 0, stdout: `${SHA}\n` };
+      if (command.startsWith("cat ")) return { exitCode: 0, stdout: report };
+      return { exitCode: 0 };
+    });
+    const result = await runTestOnBase(sandbox, SHA, { ...test, content: "fresh" });
+    expect(result.status).toBe("green");
+    expect(commands[0]).toContain(`git reset -q --hard ${SHA}`);
+    expect(commands[0]).toContain("git clean -fdq");
+    expect(
+      commands.some((c) => c.includes("vitest run 'tests/triage/issue-7.test.ts' --reporter=json")),
+    ).toBe(true);
+    expect(files.get("/workspace/tests/triage/issue-7.test.ts")).toBe("fresh");
+  });
+
+  it("fails loudly when the reset does not land on the base commit", async () => {
+    const { sandbox } = fakeSandbox(() => ({ exitCode: 0, stdout: "e".repeat(40) }));
+    await expect(runTestOnBase(sandbox, SHA, test)).rejects.toThrow("Could not reset");
   });
 });

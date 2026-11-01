@@ -13,6 +13,7 @@ you fall behind (commit or stash your work, check out the branch, redeploy).
 | **1. Agent in a sandbox**   | A new issue starts an agent that tries to reproduce it and saves a report.                                                  | `dev/checkpoint-1` |
 | **2. Structured outcome**   | The agent must submit a typed, validated result; the report is built from it.                                               | `dev/checkpoint-2` |
 | **3. Workflow and comment** | A new issue starts one durable run that checks out your fork at a pinned commit, runs the agent, and comments on the issue. | `dev/checkpoint-3` |
+| **4. Trusted verification** | The run re-runs the agent's test on a clean checkout and only confirms a reproduction it saw fail.                          | `dev/checkpoint-4` |
 
 ## Stack
 
@@ -314,6 +315,46 @@ run.finished       {"runId":"issue-12","outcome":"reproduced","failure":null}
 To see each step, its retries and its output, open **Workers & Pages →
 Workflows → `adlc-triage-run`** and pick the `issue-12` instance.
 
+## Checkpoint 4: trusted verification
+
+The comment from checkpoint 3 still repeats the agent's claim. A model can say
+`reproduced` when its test passed, when the test crashed on a typo, or when it
+changed the app's code while exploring. Now the run checks the claim itself
+before anyone sees it (`src/verify.ts`, provided):
+
+1. **Collect the test:** read the agent's test file out of the sandbox and record
+   its SHA-256.
+2. **Re-run it on the base commit:** reset the workspace to the pinned commit
+   (`git reset --hard` + `git clean -fd`, which undoes anything the agent
+   changed), write back only the test file, and run it with vitest's JSON
+   reporter.
+3. **Decide:** only a failed **assertion** counts as red. A test that fails to
+   load or crashes proves nothing about the bug. A claimed `reproduced` stands
+   only if the re-run was red; otherwise it is downgraded to `cannot-reproduce`
+   and the report says why. The model can't argue with this step.
+4. **Report:** the verified report (with a Verification section and the test's
+   source) replaces the agent's report in R2, and the issue comment shows it.
+
+You change `src/workflow.ts` (two new steps and the decision) and
+`src/reports.ts` (the Verification section). No new bindings.
+
+```sh
+pnpm run deploy
+```
+
+Open a real issue. After `outcome.submitted` the logs show:
+
+```text
+test.collected         {"runId":"issue-13","testFile":"tests/triage/issue-13.test.ts","sha256":"9b1c…"}
+verification.finished  {"runId":"issue-13","status":"red","reason":"1 test(s) failed on an assertion"}
+run.finished           {"runId":"issue-13","claimed":"reproduced","outcome":"reproduced","verified":true}
+```
+
+`pnpm report 13` and the issue comment now end with a **Verification** section:
+the result, the failing assertion, and the test the agent wrote. If the claim was
+downgraded you see `"verified":false` and the reason, for example "every test
+passed" or "the test file failed to load".
+
 ## Sending test issues
 
 ```sh
@@ -350,8 +391,9 @@ src/models.ts              provided: model choice, your gateway or a shared one,
 src/activity.ts            provided: logs each attempt, model turn and tool call
 src/github/client.ts       provided: GitHub API calls (pin a commit, comment on an issue)
 src/workspace.ts           provided: check out the pinned commit in the sandbox, install
+src/verify.ts              provided: re-run the agent's test on the base commit, decide
 src/cloudflare.ts          Worker-level exports (cp1: the Sandbox class; cp3: the Workflow)
-src/workflow.ts            cp3: the durable triage run, one per issue
+src/workflow.ts            cp3: the durable triage run, one per issue; cp4: verification
 src/agents/reproducer.ts   cp1: the agent (model, sandbox, tool); cp2: submit_outcome
 src/agents/reproducer.md   cp1: the agent's instructions
 src/reports.ts             cp1: writes the report to R2
