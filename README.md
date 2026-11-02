@@ -115,6 +115,13 @@ pnpm exec wrangler r2 bucket create adlc-triage-reports
 Then in the dashboard: **AI → AI Gateway → Create Gateway**, named
 `adlc-triage-agent`.
 
+### Sandbox lifetime
+
+A sandbox container is destroyed 30 minutes after it starts, however busy it is
+(`src/sandbox.ts`, provided). The SDK's own `sleepAfter` is an idle timer that a hung
+command keeps renewing, so on its own a stuck run would hold its container forever.
+When the cap fires, the logs show `sandbox.expired`.
+
 ### Deploy and run
 
 ```sh
@@ -458,6 +465,8 @@ src/github/webhook.ts      verified GitHub ingress; hands opened issues to app.t
 src/models.ts              provided: model choice, your gateway or a shared one, request timeout
 src/activity.ts            provided: logs each attempt, model turn and tool call
 src/github/client.ts       provided: GitHub API calls (pin a commit, comment, commit and open a PR)
+src/sandbox.ts             provided: the Sandbox class with a hard 30-minute lifetime
+src/lifetime.ts            provided: the lifetime arithmetic
 src/workspace.ts           provided: check out the pinned commit in the sandbox, install
 src/verify.ts              provided: re-run the agent's test on the base commit, decide
 src/pull-request.ts        provided: check the verified test, open the hand-off pull request
