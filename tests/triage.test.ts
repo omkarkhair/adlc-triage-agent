@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { createHmac } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import { createModels } from "@earendil-works/pi-ai";
 import type { FlueEvent } from "@flue/runtime";
 import { describe, expect, it, vi } from "vitest";
@@ -23,6 +23,12 @@ import {
   withDeadline,
   withModelTimeout,
 } from "../src/models";
+import {
+  loadVerifiedCandidate,
+  openDraftPullRequest,
+  pullRequestBranch,
+  renderPullRequest,
+} from "../src/pull-request";
 import {
   collectTestFile,
   decideOutcome,
@@ -945,5 +951,184 @@ describe("fix candidate", () => {
     expect(comment).toContain("| `pnpm typecheck` | pass |");
     expect(comment).toContain("regression test with the fix is green | pass");
     expect(comment).toContain("```diff");
+  });
+});
+
+describe("draft pull request", () => {
+  const BASE = "b".repeat(40);
+  const REPO = "acme/demo-app";
+  const PATCH = "diff --git a/src/a.ts b/src/a.ts\n";
+  type Call = { method: string; path: string; body: Record<string, unknown> | undefined };
+
+  async function candidate(overrides: Partial<Candidate> = {}): Promise<Candidate> {
+    const patch = overrides.patch ?? PATCH;
+    const digest = createHash("sha256").update(patch).digest("hex");
+    return {
+      status: "verified",
+      reason: "ok",
+      baseSha: BASE,
+      testFile: "tests/triage/issue-7.test.ts",
+      testSha256: "t".repeat(64),
+      red: null,
+      green: null,
+      checks: [{ name: "lint", command: "pnpm lint", exitCode: 0, durationMs: 1000, output: "" }],
+      files: [
+        { path: "src/a.ts", content: "export const a = 1;\n" },
+        { path: "src/old.ts", content: null },
+        { path: "tests/triage/issue-7.test.ts", content: "it('a')" },
+      ],
+      ignored: [],
+      patch,
+      digest,
+      ...overrides,
+    };
+  }
+
+  const store = (record: unknown) => ({
+    get: async (key: string) =>
+      key === "runs/issue-7/candidate.json" ? { text: async () => JSON.stringify(record) } : null,
+  });
+
+  function fakeGitHub(options: { pulls?: unknown[]; branchHead?: string; branchTree?: string }) {
+    const calls: Call[] = [];
+    const fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      const method = init?.method ?? "GET";
+      const path = String(url).replace("https://api.github.com", "");
+      const body = init?.body ? JSON.parse(String(init.body)) : undefined;
+      calls.push({ method, path, body });
+      const route = `${method} ${path.split("?")[0]}`;
+      switch (route) {
+        case `GET /repos/${REPO}/pulls`:
+          return Response.json(options.pulls ?? []);
+        case `GET /repos/${REPO}/git/commits/${BASE}`:
+          return Response.json({ tree: { sha: "basetree" } });
+        case `GET /repos/${REPO}/git/commits/${"c".repeat(40)}`:
+          return Response.json({ tree: { sha: options.branchTree ?? "other" } });
+        case `POST /repos/${REPO}/git/trees`:
+          return Response.json({ sha: "newtree" });
+        case `GET /repos/${REPO}/git/ref/heads/triage/issue-7`:
+          return options.branchHead
+            ? Response.json({ object: { sha: options.branchHead } })
+            : new Response("", { status: 404 });
+        case `POST /repos/${REPO}/git/commits`:
+          return Response.json({ sha: "d".repeat(40) });
+        case `POST /repos/${REPO}/git/refs`:
+          return Response.json({});
+        case `POST /repos/${REPO}/pulls`:
+          return Response.json({
+            number: 12,
+            html_url: "https://github.com/acme/demo-app/pull/12",
+          });
+        default:
+          return new Response("", { status: 500 });
+      }
+    }) as typeof globalThis.fetch;
+    return { calls, client: new GitHubClient("tok", fetch) };
+  }
+
+  const input = async (overrides: Partial<Candidate> = {}) => ({
+    repo: REPO,
+    baseBranch: "main",
+    issueNumber: 7,
+    runId: "issue-7",
+    candidate: await candidate(overrides),
+    proposal: { summary: "Dedupe orders.", rationale: "The docs say so." },
+  });
+
+  it("loads only the verified candidate with the expected digest", async () => {
+    const good = await candidate();
+    const digest = good.digest ?? "";
+    await expect(loadVerifiedCandidate(store(good), "issue-7", digest)).resolves.toEqual(good);
+    await expect(loadVerifiedCandidate(store(good), "issue-8", digest)).rejects.toThrow(
+      "No candidate",
+    );
+    await expect(loadVerifiedCandidate(store(good), "issue-7", "f".repeat(64))).rejects.toThrow(
+      "digest",
+    );
+    const tampered = { ...good, patch: `${PATCH}+evil\n` };
+    await expect(loadVerifiedCandidate(store(tampered), "issue-7", digest)).rejects.toThrow(
+      "digest",
+    );
+    const failed = { ...good, status: "failed" };
+    await expect(loadVerifiedCandidate(store(failed), "issue-7", digest)).rejects.toThrow(
+      "not verified",
+    );
+    const workflow = await candidate({
+      files: [{ path: ".github/workflows/ci.yml", content: "on: push" }],
+    });
+    await expect(
+      loadVerifiedCandidate(store(workflow), "issue-7", workflow.digest ?? ""),
+    ).rejects.toThrow(".github/workflows/ci.yml");
+  });
+
+  it("builds the commit on the base commit and opens a draft", async () => {
+    const gh = fakeGitHub({});
+    const result = await openDraftPullRequest(gh.client, await input());
+    expect(result).toEqual({
+      action: "created",
+      branch: "triage/issue-7",
+      reason: "opened a draft pull request",
+      number: 12,
+      url: "https://github.com/acme/demo-app/pull/12",
+    });
+    const post = (path: string) => gh.calls.find((c) => c.method === "POST" && c.path === path);
+    expect(post(`/repos/${REPO}/git/trees`)?.body).toEqual({
+      base_tree: "basetree",
+      tree: [
+        { path: "src/a.ts", mode: "100644", type: "blob", content: "export const a = 1;\n" },
+        { path: "src/old.ts", mode: "100644", type: "blob", sha: null },
+        { path: "tests/triage/issue-7.test.ts", mode: "100644", type: "blob", content: "it('a')" },
+      ],
+    });
+    expect(post(`/repos/${REPO}/git/commits`)?.body).toMatchObject({
+      tree: "newtree",
+      parents: [BASE],
+    });
+    expect(post(`/repos/${REPO}/git/refs`)?.body).toEqual({
+      ref: "refs/heads/triage/issue-7",
+      sha: "d".repeat(40),
+    });
+    expect(post(`/repos/${REPO}/pulls`)?.body).toMatchObject({
+      head: "triage/issue-7",
+      base: "main",
+      draft: true,
+    });
+    expect(gh.calls.some((c) => c.path.includes("/merge") || c.method === "PATCH")).toBe(false);
+  });
+
+  it("reports an existing pull request without writing anything", async () => {
+    const gh = fakeGitHub({ pulls: [{ number: 3, html_url: "https://x/pull/3", draft: true }] });
+    const result = await openDraftPullRequest(gh.client, await input());
+    expect(result).toMatchObject({ action: "exists", number: 3 });
+    expect(gh.calls.map((c) => c.method)).toEqual(["GET"]);
+    expect(gh.calls[0]?.path).toBe(`/repos/${REPO}/pulls?head=acme%3Atriage%2Fissue-7&state=all`);
+  });
+
+  it("reuses its own branch after a retry but never touches a different one", async () => {
+    const same = fakeGitHub({ branchHead: "c".repeat(40), branchTree: "newtree" });
+    expect((await openDraftPullRequest(same.client, await input())).action).toBe("created");
+    expect(same.calls.some((c) => c.path.endsWith("/git/refs"))).toBe(false);
+
+    const other = fakeGitHub({ branchHead: "c".repeat(40), branchTree: "someone-else" });
+    const result = await openDraftPullRequest(other.client, await input());
+    expect(result).toMatchObject({ action: "skipped", url: null });
+    expect(other.calls.some((c) => c.method === "POST" && c.path.endsWith("/pulls"))).toBe(false);
+  });
+
+  it("labels the pull request as agent-written and links the evidence", async () => {
+    const { title, body } = renderPullRequest(await input());
+    expect(pullRequestBranch(7)).toBe("triage/issue-7");
+    expect(title).toBe("Candidate fix for #7 (agent-written, unreviewed)");
+    expect(body).toContain("Refs #7");
+    expect(body).toContain("Not reviewed by a person");
+    expect(body).toContain("sha256:");
+    expect(body).toContain("runs/issue-7/report.md");
+    expect(body).toContain("`pnpm lint` passed");
+  });
+
+  it("refuses to write without a token and rejects bad branch names", async () => {
+    const client = new GitHubClient("", (async () => Response.json({})) as typeof fetch);
+    await expect(client.createBranch(REPO, "triage/issue-7", BASE)).rejects.toThrow("GITHUB_TOKEN");
+    await expect(client.branchHead(REPO, "../main")).rejects.toThrow("Invalid branch");
   });
 });
