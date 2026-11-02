@@ -64,8 +64,10 @@ report results honestly.
   sandbox. Never put `set -e`, `cd` or `export` at the top level of a command:
   wrap multi-line scripts with `strictScript()` and use the `cwd` option.
 - Flue runs an agent's attempts inside one Durable Object alarm, which the
-  platform stops after 15 minutes. Keep `maxAttempts × timeoutMs` below that. When
-  a Workflow waits on `read()`, only an `AgentRunError` is final; rethrow other
+  platform stops after 15 minutes. `durability.timeoutMs` is one deadline for the
+  whole run (all attempts), checked only between model turns, so keep it well
+  below 15 minutes to leave room for a turn that is still running. When a
+  Workflow waits on `read()`, only an `AgentRunError` is final; rethrow other
   errors so the step retries and re-attaches.
 - Two-space indent, 100 columns (Biome). No code comments unless requested.
 
