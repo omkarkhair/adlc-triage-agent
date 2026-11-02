@@ -4,16 +4,6 @@ import { createModels } from "@earendil-works/pi-ai";
 import type { FlueEvent } from "@flue/runtime";
 import { describe, expect, it, vi } from "vitest";
 import { activityRecord } from "../src/activity";
-import {
-  type Candidate,
-  classifyChange,
-  collectChanges,
-  type FixChanges,
-  parseStatus,
-  renderCandidate,
-  saveCandidate,
-  verifyCandidate,
-} from "../src/candidate";
 import { commentMarker, GitHubClient } from "../src/github/client";
 import { createTriageChannel, type OpenedIssue, summarizeDelivery } from "../src/github/webhook";
 import {
@@ -24,10 +14,10 @@ import {
   withModelTimeout,
 } from "../src/models";
 import {
-  loadVerifiedCandidate,
-  openDraftPullRequest,
+  type HandOff,
+  openTestPullRequest,
   pullRequestBranch,
-  renderPullRequest,
+  renderTestPullRequest,
 } from "../src/pull-request";
 import {
   collectTestFile,
@@ -783,211 +773,37 @@ describe("strictScript in a shared shell session", () => {
   });
 });
 
-describe("fix candidate", () => {
-  const SHA = "9".repeat(40);
-  const TEST = "tests/triage/issue-7.test.ts";
-  const test = { path: TEST, content: "it('dedupes')", sha256: "t".repeat(64) };
-  const report = (status: "red" | "green") =>
-    JSON.stringify(
-      status === "red"
-        ? {
-            numFailedTests: 1,
-            numPassedTests: 0,
-            testResults: [
-              {
-                status: "failed",
-                assertionResults: [
-                  { status: "failed", fullName: "dedupes", failureMessages: ["AssertionError: x"] },
-                ],
-              },
-            ],
-          }
-        : {
-            numFailedTests: 0,
-            numPassedTests: 1,
-            testResults: [{ status: "passed", assertionResults: [{ status: "passed" }] }],
-          },
-    );
-
-  it("applies src/ changes and new migrations, and ignores the rest", () => {
-    const entries = parseStatus(
-      [
-        " M src/domain/orders.ts",
-        " D src/old.ts",
-        "?? migrations/0003_add_index.sql",
-        " M migrations/0001_init.sql",
-        `?? ${TEST}`,
-        " M tests/orders.test.ts",
-        " M package.json",
-        "R  src/a.ts -> src/b.ts",
-      ].join("\n"),
-    );
-    expect(entries.map((entry) => [entry.path, classifyChange(entry, TEST)])).toEqual([
-      ["src/domain/orders.ts", "apply"],
-      ["src/old.ts", "apply"],
-      ["migrations/0003_add_index.sql", "apply"],
-      ["migrations/0001_init.sql", "an existing migration must not be edited"],
-      [TEST, "regression-test"],
-      ["tests/orders.test.ts", "only src/ and new migrations/ files are applied"],
-      ["package.json", "only src/ and new migrations/ files are applied"],
-      ["src/a.ts", "apply"],
-      ["src/b.ts", "apply"],
-    ]);
-    expect(classifyChange({ status: "??", path: "src/../x.ts" }, TEST)).toBe(
-      "unsupported file name",
-    );
-  });
-
-  function fakeSandbox(options: { greenAfterFix?: boolean; failingCheck?: string } = {}) {
-    const files = new Map<string, string>([["/workspace/src/domain/orders.ts", "fixed code"]]);
-    const commands: string[] = [];
-    let fixed = false;
-    let lastRun: "red" | "green" = "red";
-    const sandbox: FileSandbox = {
-      async exec(command) {
-        commands.push(command);
-        const ok = (stdout = "") => ({ exitCode: 0, stdout, stderr: "" });
-        if (command.startsWith("git -c core.quotePath")) {
-          return ok(` M src/domain/orders.ts\n?? ${TEST}\n M README.md\n`);
-        }
-        if (command.includes("git reset")) {
-          fixed = false;
-          return ok(`${SHA}\n`);
-        }
-        if (command.includes("vitest run")) {
-          lastRun = fixed && options.greenAfterFix !== false ? "green" : "red";
-          return { exitCode: lastRun === "green" ? 0 : 1, stdout: "", stderr: "" };
-        }
-        if (command.startsWith("cat ")) return ok(report(lastRun));
-        if (command.includes("git diff --cached")) return ok("diff --git a/src/domain/orders.ts\n");
-        if (options.failingCheck && command.endsWith(options.failingCheck)) {
-          return { exitCode: 1, stdout: "\u001b[31m1 error\u001b[39m", stderr: "" };
-        }
-        return ok();
-      },
-      async readFile(path) {
-        const content = files.get(path);
-        if (content === undefined) throw new Error(`no ${path}`);
-        return { content };
-      },
-      async writeFile(path, content) {
-        files.set(path, content);
-        if (path.includes("/src/")) fixed = true;
-      },
-    };
-    return { sandbox, commands, files };
-  }
-
-  it("collects only the files the fix may contain", async () => {
-    const { sandbox } = fakeSandbox();
-    await expect(collectChanges(sandbox, TEST)).resolves.toEqual({
-      files: [{ path: "src/domain/orders.ts", content: "fixed code" }],
-      ignored: ["README.md (only src/ and new migrations/ files are applied)"],
-    });
-  });
-
-  const changes: FixChanges = {
-    files: [{ path: "src/domain/orders.ts", content: "fixed code" }],
-    ignored: [],
-  };
-
-  it("verifies a fix that turns the unchanged test green and passes every check", async () => {
-    const { sandbox, commands } = fakeSandbox();
-    const candidate = await verifyCandidate(sandbox, SHA, test, changes);
-    expect(candidate).toMatchObject({ status: "verified", baseSha: SHA, testFile: TEST });
-    expect(candidate.red?.status).toBe("red");
-    expect(candidate.green?.status).toBe("green");
-    expect(candidate.checks.map((check) => [check.name, check.exitCode])).toEqual([
-      ["lint", 0],
-      ["typecheck", 0],
-      ["test", 0],
-      ["build", 0],
-    ]);
-    expect(candidate.digest).toMatch(/^[0-9a-f]{64}$/);
-    expect(candidate.files.map((file) => file.path)).toEqual(["src/domain/orders.ts", TEST]);
-    expect(commands.some((c) => c.includes(`git add -A -- 'src/domain/orders.ts' '${TEST}'`))).toBe(
-      true,
-    );
-    expect(commands.filter((c) => c.endsWith("pnpm lint"))[0]).toMatch(/^CI=1 /);
-  });
-
-  it("rejects a fix that does not turn the test green", async () => {
-    const { sandbox } = fakeSandbox({ greenAfterFix: false });
-    const candidate = await verifyCandidate(sandbox, SHA, test, changes);
-    expect(candidate.status).toBe("failed");
-    expect(candidate.reason).toContain("does not pass with the fix");
-    expect(candidate.checks).toEqual([]);
-    expect(candidate.digest).toBeNull();
-  });
-
-  it("rejects a fix when a project check fails, and keeps its output", async () => {
-    const { sandbox } = fakeSandbox({ failingCheck: "pnpm typecheck" });
-    const candidate = await verifyCandidate(sandbox, SHA, test, changes);
-    expect(candidate).toMatchObject({ status: "failed", reason: "checks failed: typecheck" });
-    expect(candidate.checks.find((check) => check.name === "typecheck")?.output).toBe("1 error");
-  });
-
-  it("rejects an empty fix without running anything", async () => {
-    const { sandbox, commands } = fakeSandbox();
-    const candidate = await verifyCandidate(sandbox, SHA, test, { files: [], ignored: [] });
-    expect(candidate.status).toBe("failed");
-    expect(commands).toEqual([]);
-  });
-
-  it("stores the patch and the record, and renders a comment with the digest", async () => {
-    const { sandbox } = fakeSandbox();
-    const candidate: Candidate = await verifyCandidate(sandbox, SHA, test, changes);
-    const put = vi.fn(async () => {});
-    await expect(saveCandidate({ put }, "issue-7", candidate)).resolves.toEqual({
-      patch: "runs/issue-7/candidate.patch",
-      record: "runs/issue-7/candidate.json",
-    });
-    expect(put).toHaveBeenCalledTimes(2);
-    const comment = renderCandidate("issue-7", candidate, {
-      summary: "Reuse the order for a repeated key.",
-      rationale: "The docs say so.",
-    });
-    expect(comment).toContain(`sha256:${candidate.digest}`);
-    expect(comment).toContain("| `pnpm typecheck` | pass |");
-    expect(comment).toContain("regression test with the fix is green | pass");
-    expect(comment).toContain("```diff");
-  });
-});
-
-describe("draft pull request", () => {
+describe("hand-off pull request", () => {
   const BASE = "b".repeat(40);
   const REPO = "acme/demo-app";
-  const PATCH = "diff --git a/src/a.ts b/src/a.ts\n";
+  const TEST_PATH = "tests/triage/issue-7.test.ts";
+  const CONTENT = "it('returns the same order', () => {});\n";
   type Call = { method: string; path: string; body: Record<string, unknown> | undefined };
 
-  async function candidate(overrides: Partial<Candidate> = {}): Promise<Candidate> {
-    const patch = overrides.patch ?? PATCH;
-    const digest = createHash("sha256").update(patch).digest("hex");
+  function handOff(overrides: Partial<HandOff> = {}): HandOff {
+    const sha256 = createHash("sha256").update(CONTENT).digest("hex");
     return {
-      status: "verified",
-      reason: "ok",
+      repo: REPO,
+      baseBranch: "main",
+      issueNumber: 7,
+      runId: "issue-7",
       baseSha: BASE,
-      testFile: "tests/triage/issue-7.test.ts",
-      testSha256: "t".repeat(64),
-      red: null,
-      green: null,
-      checks: [{ name: "lint", command: "pnpm lint", exitCode: 0, durationMs: 1000, output: "" }],
-      files: [
-        { path: "src/a.ts", content: "export const a = 1;\n" },
-        { path: "src/old.ts", content: null },
-        { path: "tests/triage/issue-7.test.ts", content: "it('a')" },
-      ],
-      ignored: [],
-      patch,
-      digest,
+      test: { path: TEST_PATH, content: CONTENT, sha256 },
+      verification: {
+        status: "red",
+        reason: "1 test(s) failed on an assertion",
+        testFile: TEST_PATH,
+        testSha256: sha256,
+        passed: 0,
+        failed: 1,
+        failures: [
+          { name: "returns the same order", message: "AssertionError: expected 2 to be 1" },
+        ],
+      },
+      outcome: { summary: "Retries duplicate orders.", expected: "One order.", observed: "Two." },
       ...overrides,
     };
   }
-
-  const store = (record: unknown) => ({
-    get: async (key: string) =>
-      key === "runs/issue-7/candidate.json" ? { text: async () => JSON.stringify(record) } : null,
-  });
 
   function fakeGitHub(options: { pulls?: unknown[]; branchHead?: string; branchTree?: string }) {
     const calls: Call[] = [];
@@ -996,8 +812,7 @@ describe("draft pull request", () => {
       const path = String(url).replace("https://api.github.com", "");
       const body = init?.body ? JSON.parse(String(init.body)) : undefined;
       calls.push({ method, path, body });
-      const route = `${method} ${path.split("?")[0]}`;
-      switch (route) {
+      switch (`${method} ${path.split("?")[0]}`) {
         case `GET /repos/${REPO}/pulls`:
           return Response.json(options.pulls ?? []);
         case `GET /repos/${REPO}/git/commits/${BASE}`:
@@ -1026,44 +841,9 @@ describe("draft pull request", () => {
     return { calls, client: new GitHubClient("tok", fetch) };
   }
 
-  const input = async (overrides: Partial<Candidate> = {}) => ({
-    repo: REPO,
-    baseBranch: "main",
-    issueNumber: 7,
-    runId: "issue-7",
-    candidate: await candidate(overrides),
-    proposal: { summary: "Dedupe orders.", rationale: "The docs say so." },
-  });
-
-  it("loads only the verified candidate with the expected digest", async () => {
-    const good = await candidate();
-    const digest = good.digest ?? "";
-    await expect(loadVerifiedCandidate(store(good), "issue-7", digest)).resolves.toEqual(good);
-    await expect(loadVerifiedCandidate(store(good), "issue-8", digest)).rejects.toThrow(
-      "No candidate",
-    );
-    await expect(loadVerifiedCandidate(store(good), "issue-7", "f".repeat(64))).rejects.toThrow(
-      "digest",
-    );
-    const tampered = { ...good, patch: `${PATCH}+evil\n` };
-    await expect(loadVerifiedCandidate(store(tampered), "issue-7", digest)).rejects.toThrow(
-      "digest",
-    );
-    const failed = { ...good, status: "failed" };
-    await expect(loadVerifiedCandidate(store(failed), "issue-7", digest)).rejects.toThrow(
-      "not verified",
-    );
-    const workflow = await candidate({
-      files: [{ path: ".github/workflows/ci.yml", content: "on: push" }],
-    });
-    await expect(
-      loadVerifiedCandidate(store(workflow), "issue-7", workflow.digest ?? ""),
-    ).rejects.toThrow(".github/workflows/ci.yml");
-  });
-
-  it("builds the commit on the base commit and opens a draft", async () => {
+  it("commits only the verified test on the base commit and opens a draft", async () => {
     const gh = fakeGitHub({});
-    const result = await openDraftPullRequest(gh.client, await input());
+    const result = await openTestPullRequest(gh.client, handOff());
     expect(result).toEqual({
       action: "created",
       branch: "triage/issue-7",
@@ -1074,11 +854,7 @@ describe("draft pull request", () => {
     const post = (path: string) => gh.calls.find((c) => c.method === "POST" && c.path === path);
     expect(post(`/repos/${REPO}/git/trees`)?.body).toEqual({
       base_tree: "basetree",
-      tree: [
-        { path: "src/a.ts", mode: "100644", type: "blob", content: "export const a = 1;\n" },
-        { path: "src/old.ts", mode: "100644", type: "blob", sha: null },
-        { path: "tests/triage/issue-7.test.ts", mode: "100644", type: "blob", content: "it('a')" },
-      ],
+      tree: [{ path: TEST_PATH, mode: "100644", type: "blob", content: CONTENT }],
     });
     expect(post(`/repos/${REPO}/git/commits`)?.body).toMatchObject({
       tree: "newtree",
@@ -1096,9 +872,23 @@ describe("draft pull request", () => {
     expect(gh.calls.some((c) => c.path.includes("/merge") || c.method === "PATCH")).toBe(false);
   });
 
+  it("refuses a test the harness did not see fail, or different bytes", async () => {
+    const gh = fakeGitHub({});
+    const notRed = handOff();
+    notRed.verification = { ...notRed.verification, status: "invalid" };
+    await expect(openTestPullRequest(gh.client, notRed)).rejects.toThrow("verified failing");
+    const edited = handOff();
+    edited.test = { ...edited.test, content: `${CONTENT}// changed\n` };
+    await expect(openTestPullRequest(gh.client, edited)).rejects.toThrow("does not match");
+    const elsewhere = handOff();
+    elsewhere.test = { ...elsewhere.test, path: "src/app.ts" };
+    await expect(openTestPullRequest(gh.client, elsewhere)).rejects.toThrow("Unexpected test");
+    expect(gh.calls).toEqual([]);
+  });
+
   it("reports an existing pull request without writing anything", async () => {
     const gh = fakeGitHub({ pulls: [{ number: 3, html_url: "https://x/pull/3", draft: true }] });
-    const result = await openDraftPullRequest(gh.client, await input());
+    const result = await openTestPullRequest(gh.client, handOff());
     expect(result).toMatchObject({ action: "exists", number: 3 });
     expect(gh.calls.map((c) => c.method)).toEqual(["GET"]);
     expect(gh.calls[0]?.path).toBe(`/repos/${REPO}/pulls?head=acme%3Atriage%2Fissue-7&state=all`);
@@ -1106,24 +896,24 @@ describe("draft pull request", () => {
 
   it("reuses its own branch after a retry but never touches a different one", async () => {
     const same = fakeGitHub({ branchHead: "c".repeat(40), branchTree: "newtree" });
-    expect((await openDraftPullRequest(same.client, await input())).action).toBe("created");
+    expect((await openTestPullRequest(same.client, handOff())).action).toBe("created");
     expect(same.calls.some((c) => c.path.endsWith("/git/refs"))).toBe(false);
 
     const other = fakeGitHub({ branchHead: "c".repeat(40), branchTree: "someone-else" });
-    const result = await openDraftPullRequest(other.client, await input());
+    const result = await openTestPullRequest(other.client, handOff());
     expect(result).toMatchObject({ action: "skipped", url: null });
     expect(other.calls.some((c) => c.method === "POST" && c.path.endsWith("/pulls"))).toBe(false);
   });
 
-  it("labels the pull request as agent-written and links the evidence", async () => {
-    const { title, body } = renderPullRequest(await input());
+  it("labels the pull request and tells the fixer the rules", () => {
+    const { title, body } = renderTestPullRequest(handOff());
     expect(pullRequestBranch(7)).toBe("triage/issue-7");
-    expect(title).toBe("Candidate fix for #7 (agent-written, unreviewed)");
+    expect(title).toBe("Failing test for #7 (agent-written, unreviewed)");
     expect(body).toContain("Refs #7");
     expect(body).toContain("Not reviewed by a person");
-    expect(body).toContain("sha256:");
+    expect(body).toContain("AssertionError: expected 2 to be 1");
+    expect(body).toContain("without changing it");
     expect(body).toContain("runs/issue-7/report.md");
-    expect(body).toContain("`pnpm lint` passed");
   });
 
   it("refuses to write without a token and rejects bad branch names", async () => {
