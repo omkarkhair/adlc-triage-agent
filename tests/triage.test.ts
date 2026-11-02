@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 import { activityRecord } from "../src/activity";
 import { commentMarker, GitHubClient } from "../src/github/client";
 import { createTriageChannel, type OpenedIssue, summarizeDelivery } from "../src/github/webhook";
+import { MAX_LIFETIME_MS, planLifetime } from "../src/lifetime";
 import {
   modelFor,
   sharedGatewayFrom,
@@ -944,5 +945,43 @@ describe("hand-off pull request", () => {
     const client = new GitHubClient("", (async () => Response.json({})) as typeof fetch);
     await expect(client.createBranch(REPO, "triage/issue-7", BASE)).rejects.toThrow("GITHUB_TOKEN");
     await expect(client.branchHead(REPO, "../main")).rejects.toThrow("Invalid branch");
+  });
+});
+
+describe("sandbox lifetime", () => {
+  const start = 1_000_000;
+
+  it("caps a sandbox at 30 minutes", () => {
+    expect(MAX_LIFETIME_MS).toBe(30 * 60_000);
+  });
+
+  it("waits for the remaining time, rounded up to whole seconds", () => {
+    expect(planLifetime(start, start)).toEqual({ action: "wait", delaySeconds: 1800 });
+    expect(planLifetime(start, start + 10 * 60_000 + 500)).toEqual({
+      action: "wait",
+      delaySeconds: 1200,
+    });
+  });
+
+  it("expires at and after the deadline, busy or not", () => {
+    expect(planLifetime(start, start + MAX_LIFETIME_MS)).toEqual({
+      action: "expire",
+      legacy: false,
+    });
+    expect(planLifetime(start, start + 2 * MAX_LIFETIME_MS)).toEqual({
+      action: "expire",
+      legacy: false,
+    });
+  });
+
+  it("expires a running container that has no start record right away", () => {
+    expect(planLifetime(undefined, start)).toEqual({ action: "expire", legacy: true });
+  });
+
+  it("takes the limit as a parameter", () => {
+    expect(planLifetime(start, start + 5_000, 10_000)).toEqual({
+      action: "wait",
+      delaySeconds: 5,
+    });
   });
 });
