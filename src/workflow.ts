@@ -18,10 +18,11 @@ const SETUP = {
   timeout: "10 minutes",
 } as const;
 // A retry of a "wait" step reads the same agent run again (read() re-attaches), so a dropped
-// connection doesn't lose the result.
+// connection doesn't lose the result. The sandbox has a hard 30-minute lifetime, so the wait and
+// its retries stay under that: a sandbox that hits the cap makes the agent run fail and end.
 const AGENT = {
-  retries: { limit: 3, delay: "30 seconds", backoff: "constant" },
-  timeout: "20 minutes",
+  retries: { limit: 1, delay: "30 seconds", backoff: "constant" },
+  timeout: "25 minutes",
 } as const;
 
 interface AgentResult {
@@ -142,6 +143,14 @@ export class TriageWorkflow extends WorkflowEntrypoint<Env, OpenedIssue> {
       );
     } else {
       await comment("outcome", `Triage could not finish: ${result.failure ?? "unknown error"}.`);
+    }
+
+    // 5. The run is over: free the container now, not when its 30-minute lifetime fires.
+    try {
+      await step.do("destroy sandbox", QUICK, () => sandbox.destroy());
+      log(runId, "sandbox.destroyed");
+    } catch (error) {
+      log(runId, "sandbox.destroy_failed", { error: describe(error) });
     }
 
     log(runId, "run.finished", {
