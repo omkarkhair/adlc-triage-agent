@@ -15,6 +15,7 @@ you fall behind (commit or stash your work, check out the branch, redeploy).
 | **3. Workflow and comment** | A new issue starts one durable run that checks out your fork at a pinned commit, runs the agent, and comments on the issue. | `dev/checkpoint-3` |
 | **4. Trusted verification** | The run re-runs the agent's test on a clean checkout and only confirms a reproduction it saw fail.                          | `dev/checkpoint-4` |
 | **5. Fix and verify**       | A second agent proposes a fix; a fresh sandbox checks red to green and every project check before it counts.                | `dev/checkpoint-5` |
+| **6. Draft pull request**   | A verified candidate becomes a draft pull request on your fork, built by the Worker; nothing is merged.                     | `dev/checkpoint-6` |
 
 ## Stack
 
@@ -409,6 +410,52 @@ Read the patch with `pnpm report 14 candidate.patch` (or `candidate.json` for th
 whole record). Nothing has been pushed to your repository yet; checkpoint 6 turns
 a verified candidate into a draft pull request.
 
+## Checkpoint 6: draft pull request
+
+A verified candidate now becomes a **draft** pull request on your fork. Only
+trusted code writes to the repository, and only what was verified:
+
+1. **Reload the evidence:** the run reads `candidate.json` back from R2 and
+   checks it: status `verified`, the same digest the check step produced, a patch
+   that still hashes to that digest, and only files a fix may change
+   (`src/pull-request.ts`, provided). The pull request is built from this
+   record, not from anything an agent says.
+2. **Build the commit in the Worker:** with GitHub's Git Data API, the Worker
+   writes a tree (the base commit's tree plus the fix and the regression test),
+   a commit on the **base commit**, and the branch `triage/issue-<n>`. The token
+   never enters a sandbox, and no `git push` runs anywhere.
+3. **Open a draft:** the title and body say the change is agent-written and
+   unreviewed, and the body lists what the harness checked, the digest, and where
+   the report and patch are in R2. The body says `Refs #<n>`, not `Fixes`, so
+   merging doesn't close the issue on its own. A draft can't be merged until a
+   person marks it ready. The run never merges, never force-pushes, and never
+   touches a branch it didn't create.
+4. **Tell the reporter:** the fix comment links the pull request.
+
+The step is safe to retry. If a pull request from the branch already exists, it is
+reported and nothing is written. If the branch exists with exactly these files,
+it is reused; with anything else, the run skips the pull request and says why.
+
+You add the pull request step to `src/workflow.ts`. The token from checkpoint 3
+already has **Contents** and **Pull requests** write access. Draft pull requests
+need a public repository (your fork is) or a paid plan.
+
+```sh
+pnpm run deploy
+```
+
+Open a real issue. After the checkpoint 5 lines, the logs show:
+
+```text
+candidate.saved    {"runId":"issue-15","patch":"runs/issue-15/candidate.patch"}
+pr.opened          {"runId":"issue-15","action":"created","number":16,"url":"https://github.com/…/pull/16"}
+run.finished       {"runId":"issue-15","fix":"verified","digest":"5e0a…","pullRequest":"https://github.com/…/pull/16"}
+```
+
+Review the draft like any other contribution. Before an agent writes to a real
+repository, read the guide's "Before production" page: a human approval step
+bound to the digest, intake rules, and network limits for the sandbox.
+
 ## Sending test issues
 
 ```sh
@@ -443,12 +490,13 @@ src/app.ts                 HTTP routes (Flue keeps all routing here)
 src/github/webhook.ts      verified GitHub ingress; hands opened issues to app.ts
 src/models.ts              provided: model choice, your gateway or a shared one, request timeout
 src/activity.ts            provided: logs each attempt, model turn and tool call
-src/github/client.ts       provided: GitHub API calls (pin a commit, comment on an issue)
+src/github/client.ts       provided: GitHub API calls (pin a commit, comment, commit and open a PR)
 src/workspace.ts           provided: check out the pinned commit in the sandbox, install
 src/verify.ts              provided: re-run the agent's test on the base commit, decide
 src/candidate.ts           provided: collect a fix, check it in a fresh sandbox, store it
+src/pull-request.ts        provided: reload a verified candidate, open a draft pull request
 src/cloudflare.ts          Worker-level exports (cp1: the Sandbox class; cp3: the Workflow)
-src/workflow.ts            cp3: the durable triage run, one per issue; cp4: verification; cp5: fix
+src/workflow.ts            cp3: durable run per issue; cp4: verification; cp5: fix; cp6: pull request
 src/agents/reproducer.ts   cp1: the agent (model, sandbox, tool); cp2: submit_outcome
 src/agents/reproducer.md   cp1: the agent's instructions
 src/agents/fixer.ts        cp5: the Fixer agent and its submit_fix tool
