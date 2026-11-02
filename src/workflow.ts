@@ -6,6 +6,7 @@ import { OUTCOME_PART, Reproducer, type ReproducerData } from "./agents/reproduc
 import { commentMarker, GitHubClient } from "./github/client";
 import type { OpenedIssue } from "./github/webhook";
 import { ReproOutcome } from "./outcome";
+import { openTestPullRequest, type PullRequestResult } from "./pull-request";
 import { renderReport, saveReport } from "./reports";
 import { collectTestFile, decideOutcome, runTestOnBase, type Verification } from "./verify";
 import { prepareWorkspace } from "./workspace";
@@ -167,6 +168,7 @@ export class TriageWorkflow extends WorkflowEntrypoint<Env, OpenedIssue> {
     // 5. The harness decides the outcome, stores the verified report, and tells the reporter.
     const outcome = result.outcome;
     const verdict = outcome ? decideOutcome(outcome.outcome, verification) : null;
+    let pullRequest: PullRequestResult | null = null;
     if (outcome && verdict) {
       const context = { agentId: runId, repo: issue.repo, issueNumber: issue.issueNumber };
       const verified = { verdict, verification, testSource };
@@ -178,10 +180,41 @@ export class TriageWorkflow extends WorkflowEntrypoint<Env, OpenedIssue> {
       } catch (error) {
         log(runId, "report.failed", { error: describe(error) });
       }
+
+      // 6. Hand off: the verified failing test becomes a draft pull request, built by trusted code
+      //    from exactly what it verified. A person or another agent writes the fix.
+      let handOffNote = "";
+      const sha256 = verification?.testSha256;
+      if (verdict.verified && verification && sha256 && testSource && baseSha && github.canWrite) {
+        const handOff = {
+          repo: issue.repo,
+          baseBranch: issue.defaultBranch,
+          issueNumber: issue.issueNumber,
+          runId,
+          baseSha,
+          test: { path: verification.testFile ?? "", content: testSource, sha256 },
+          verification,
+          outcome,
+        };
+        try {
+          const opened = await step.do("open pull request", QUICK, () =>
+            openTestPullRequest(github, handOff),
+          );
+          pullRequest = opened;
+          log(runId, opened.url ? "pr.opened" : "pr.skipped", { ...opened });
+          handOffNote = opened.url
+            ? `**Draft pull request with the failing test, ready for a fix:** ${opened.url}\n\n`
+            : `**No pull request:** ${opened.reason}.\n\n`;
+        } catch (error) {
+          log(runId, "pr.failed", { error: describe(error) });
+          handOffNote = `**No pull request:** ${describe(error)}.\n\n`;
+        }
+      }
+
       const report = renderReport(context, outcome, new Date().toISOString(), verified);
       await comment(
         "outcome",
-        `${report}\n---\n_Written by an AI agent and checked by the triage harness on commit \`${baseSha?.slice(0, 7)}\`._`,
+        `${handOffNote}${report}\n---\n_Written by an AI agent and checked by the triage harness on commit \`${baseSha?.slice(0, 7)}\`._`,
       );
     } else {
       await comment("outcome", `Triage could not finish: ${result.failure ?? "unknown error"}.`);
@@ -193,6 +226,7 @@ export class TriageWorkflow extends WorkflowEntrypoint<Env, OpenedIssue> {
       outcome: verdict?.outcome ?? null,
       verified: verdict?.verified ?? false,
       failure: result.failure,
+      pullRequest: pullRequest?.url ?? null,
     };
     log(runId, "run.finished", summary);
     return summary;
