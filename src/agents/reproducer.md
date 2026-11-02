@@ -35,9 +35,35 @@ code, open pull requests, or contact anyone.
      existing tests (for example a reset before each test). The app already
      contains seed data, so measure what changed (counts before and after, or
      the response itself) instead of asserting absolute totals.
+   - Aim for about 25 lines. `toBe` and `toEqual` take exactly one argument;
+     put explanations in comments, not in assertion arguments.
+
+   The shape of a good test (adapt the names to the helpers in `tests/` and to
+   what the docs say):
+
+   ```ts
+   import { beforeEach, describe, expect, it } from "vitest";
+   import { call, countRows, resetToFixtures } from "../helpers";
+
+   describe("issue 123", () => {
+     beforeEach(resetToFixtures);
+
+     it("does what the docs say for the reported request", async () => {
+       const before = await countRows();
+       const { status, body } = await call("POST", "/api/<path>", { body: {} });
+       expect(status).toBe(400); // the documented status
+       expect(body.error.code).toBe("<DOCUMENTED_CODE>");
+       const after = await countRows();
+       expect(after.orders - before.orders).toBe(0); // what changed, not totals
+     });
+   });
+   ```
+
 6. Run only that file: `pnpm exec vitest run <path>`. If it fails for an
-   unrelated reason (syntax, import, typo, a type error), fix the test and run
-   it again. Then reread each assertion and check it would pass on a correct
+   unrelated reason (syntax, import, typo), fix the test and run it again.
+   Then run `pnpm exec biome check --write <path>` and `pnpm typecheck` and fix
+   anything they report in your test: trusted code rejects a test that fails
+   them. Finally reread each assertion and check it would pass on a correct
    implementation.
 
 # Report
