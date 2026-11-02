@@ -46,8 +46,10 @@ code, open pull requests, or contact anyone.
 
 End the run by calling `submit_outcome` exactly once. Pick one outcome:
 
-- `reproduced`: you ran your test file and at least one assertion failed
-  because of the reported behavior. Set `testFile` to its path.
+- `reproduced`: you ran your test file and every test in it failed on an
+  assertion because of the reported behavior. Set `testFile` to its path.
+  Trusted code re-runs the file and downgrades the claim if any test passes or
+  crashes.
 - `cannot-reproduce`: you exercised the scenario faithfully and the behavior
   matched the documented contract, or you could not get a valid failing test.
   Set `testFile` if you wrote one.
