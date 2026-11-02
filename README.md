@@ -329,8 +329,10 @@ before anyone sees it (`src/verify.ts`, provided):
    (`git reset --hard` + `git clean -fd`, which undoes anything the agent
    changed), write back only the test file, and run it with vitest's JSON
    reporter.
-3. **Decide:** only a failed **assertion** counts as red. A test that fails to
-   load or crashes proves nothing about the bug. A claimed `reproduced` stands
+3. **Decide:** the file is red only if **every** test in it failed on an
+   **assertion**. A test that fails to load or crashes proves nothing about the
+   bug, and a test that already passes on the base commit doesn't isolate it.
+   A claimed `reproduced` stands
    only if the re-run was red; otherwise it is downgraded to `cannot-reproduce`
    and the report says why. The model can't argue with this step.
 4. **Report:** the verified report (with a Verification section and the test's

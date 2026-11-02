@@ -21,7 +21,7 @@ export interface TestFile {
 }
 
 export interface Verification {
-  /** red: an assertion failed. green: every test passed. invalid: the run proved nothing. */
+  /** red: every test failed on an assertion. green: every test passed. invalid: proved nothing. */
   status: "red" | "green" | "invalid";
   reason: string;
   testFile: string | null;
@@ -81,8 +81,9 @@ interface VitestJson {
 }
 
 /**
- * Decides what one vitest JSON report proves. Only an assertion failure counts as red: a test
- * that crashes (bad import, typo, TypeError) or fails to load proves nothing about the bug.
+ * Decides what one vitest JSON report proves. Red means every test in the file failed on an
+ * assertion: a test that crashes (bad import, typo, TypeError) or fails to load proves nothing
+ * about the bug, and a test that already passes on the base commit does not isolate it.
  */
 export function interpretVitest(
   raw: string,
@@ -125,7 +126,14 @@ export function interpretVitest(
     };
   }
   if (counts.failed > 0 && exitCode !== 0) {
-    if (failures.some((failure) => failure.message.startsWith("AssertionError"))) {
+    if (counts.passed > 0) {
+      return {
+        ...counts,
+        status: "invalid",
+        reason: `${counts.passed} test(s) in the file pass on the base commit; every test must fail because of the bug`,
+      };
+    }
+    if (failures.every((failure) => failure.message.startsWith("AssertionError"))) {
       return {
         ...counts,
         status: "red",
@@ -135,7 +143,7 @@ export function interpretVitest(
     return {
       ...counts,
       status: "invalid",
-      reason: "the test failed with an error, not a failed assertion",
+      reason: "a test failed with an error, not a failed assertion",
     };
   }
   if (counts.failed === 0 && counts.passed > 0 && exitCode === 0) {
