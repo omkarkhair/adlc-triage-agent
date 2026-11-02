@@ -69,6 +69,9 @@ report results honestly.
   below 15 minutes to leave room for a turn that is still running. When a
   Workflow waits on `read()`, only an `AgentRunError` is final; rethrow other
   errors so the step retries and re-attaches.
+- Sandbox containers have a hard 30-minute lifetime (`src/sandbox.ts`, the class
+  `src/cloudflare.ts` exports from checkpoint 1). The SDK's `sleepAfter` is only an
+  idle timer and a hung command renews it. Keep any run's total time under that cap.
 - Two-space indent, 100 columns (Biome). No code comments unless requested.
 
 ## Safety rules
