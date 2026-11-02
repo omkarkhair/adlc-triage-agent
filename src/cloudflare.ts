@@ -1,2 +1,2 @@
-export { Sandbox } from "@cloudflare/sandbox";
+export { Sandbox } from "./sandbox";
 export { TriageWorkflow } from "./workflow";
