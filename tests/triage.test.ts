@@ -711,6 +711,29 @@ describe("trusted verification", () => {
       commands.some((c) => c.includes("vitest run 'tests/triage/issue-7.test.ts' --reporter=json")),
     ).toBe(true);
     expect(files.get("/workspace/tests/triage/issue-7.test.ts")).toBe("fresh");
+    expect(commands).toContain("pnpm exec biome check 'tests/triage/issue-7.test.ts'");
+    expect(commands).toContain("pnpm typecheck");
+  });
+
+  it("formats the test before collecting it", async () => {
+    const { sandbox, commands } = fakeSandbox(() => ({ exitCode: 0 }));
+    await collectTestFile(sandbox, "tests/triage/issue-7.test.ts");
+    expect(commands).toEqual(["pnpm exec biome check --write 'tests/triage/issue-7.test.ts'"]);
+  });
+
+  it("calls a test invalid when it fails lint or typecheck, before running it", async () => {
+    for (const failing of ["biome check", "pnpm typecheck"]) {
+      const { sandbox, commands } = fakeSandbox((command) => {
+        if (command.includes("git reset")) return { exitCode: 0, stdout: `${SHA}\n` };
+        if (command.includes(failing)) return { exitCode: 1, stdout: "error TS2554" };
+        return { exitCode: 0 };
+      });
+      const result = await runTestOnBase(sandbox, SHA, test);
+      expect(result.status).toBe("invalid");
+      expect(result.reason).toContain("CI would stay red");
+      expect(result.failures[0]?.message).toContain("TS2554");
+      expect(commands.some((c) => c.includes("vitest run"))).toBe(false);
+    }
   });
 
   it("fails loudly when the reset does not land on the base commit", async () => {
@@ -913,6 +936,7 @@ describe("hand-off pull request", () => {
     expect(body).toContain("Not reviewed by a person");
     expect(body).toContain("AssertionError: expected 2 to be 1");
     expect(body).toContain("without changing it");
+    expect(body).toContain("correct the test in a separate");
     expect(body).toContain("runs/issue-7/report.md");
   });
 
