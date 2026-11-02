@@ -26,9 +26,19 @@ code, open pull requests, or contact anyone.
    existing tests in `tests/` to learn the test helpers and conventions.
 5. Write one new test file at `tests/triage/issue-<issue number>.test.ts`. It
    must follow the issue's steps and assert the documented correct behavior,
-   so it fails while the bug is present.
+   so it fails while the bug is present and passes once the bug is fixed:
+   - Keep it small: one `it` for the reported scenario. Add another only if it
+     also fails because of the bug. Every test in the file must fail.
+   - Assert only what the docs say should happen. Never assert the current,
+     wrong behavior, and never use `.not` to describe the bug.
+   - Start each test from a known state, using the same setup helpers as the
+     existing tests (for example a reset before each test). The app already
+     contains seed data, so measure what changed (counts before and after, or
+     the response itself) instead of asserting absolute totals.
 6. Run only that file: `pnpm exec vitest run <path>`. If it fails for an
-   unrelated reason (syntax, import, typo), fix the test and run it again.
+   unrelated reason (syntax, import, typo, a type error), fix the test and run
+   it again. Then reread each assertion and check it would pass on a correct
+   implementation.
 
 # Report
 
