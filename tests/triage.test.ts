@@ -592,8 +592,40 @@ describe("trusted verification", () => {
     );
     expect(interpretVitest(raw, 1, test)).toMatchObject({
       status: "invalid",
-      reason: "the test failed with an error, not a failed assertion",
+      reason: "a test failed with an error, not a failed assertion",
     });
+  });
+
+  it("calls a file invalid when one of its tests passes on the base commit", () => {
+    const raw = vitest(
+      {
+        status: "failed",
+        assertionResults: [
+          { status: "failed", failureMessages: ["AssertionError: expected 2 to be 1"] },
+          { status: "passed" },
+        ],
+      },
+      { numFailedTests: 1, numPassedTests: 1 },
+    );
+    expect(interpretVitest(raw, 1, test)).toMatchObject({
+      status: "invalid",
+      reason:
+        "1 test(s) in the file pass on the base commit; every test must fail because of the bug",
+    });
+  });
+
+  it("calls a file invalid when one failure is a crash", () => {
+    const raw = vitest(
+      {
+        status: "failed",
+        assertionResults: [
+          { status: "failed", failureMessages: ["AssertionError: expected 2 to be 1"] },
+          { status: "failed", failureMessages: ["TypeError: x is not a function"] },
+        ],
+      },
+      { numFailedTests: 2 },
+    );
+    expect(interpretVitest(raw, 1, test).status).toBe("invalid");
   });
 
   it("calls a test file that fails to load invalid", () => {
