@@ -330,8 +330,10 @@ before anyone sees it (`src/verify.ts`, provided):
    (`git reset --hard` + `git clean -fd`, which undoes anything the agent
    changed), write back only the test file, and run it with vitest's JSON
    reporter.
-3. **Decide:** the file is red only if **every** test in it failed on an
-   **assertion**. A test that fails to load or crashes proves nothing about the
+3. **Decide:** before the run, the harness formats the test file and checks it
+   with the project's `pnpm lint` and `pnpm typecheck`; a test that fails them
+   would keep CI red even after a correct fix, so it doesn't count. The file is
+   red only if **every** test in it failed on an **assertion**. A test that fails to load or crashes proves nothing about the
    bug, and a test that already passes on the base commit doesn't isolate it.
    A claimed `reproduced` stands
    only if the re-run was red; otherwise it is downgraded to `cannot-reproduce`
@@ -377,7 +379,9 @@ repository, and only what it verified:
    unreviewed. The body shows the failing assertion, the agent's report (marked
    as unverified), the rules for a fix (make the test pass without changing it,
    change only `src/` and new migrations, keep every check passing), the test's
-   SHA-256 and where the report is in R2. It says `Refs #<n>`, not `Fixes`, so
+   SHA-256 and where the report is in R2. The harness proved the test fails, not
+   that it is right, so the body also invites the fixer to correct a test that
+   contradicts the docs, in a separate commit. It says `Refs #<n>`, not `Fixes`, so
    merging doesn't close the issue on its own. The run never merges, never
    force-pushes, and never touches a branch it didn't create.
 4. **Tell the reporter:** the issue comment links the pull request.
