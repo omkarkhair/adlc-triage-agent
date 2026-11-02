@@ -51,13 +51,21 @@ export function clean(text: string, max: number): string {
   return text.replace(ANSI, "").trim().slice(0, max);
 }
 
-/** Reads the agent's test out of the sandbox before anything resets it. */
+/**
+ * Reads the agent's test out of the sandbox before anything resets it. First applies the
+ * project's safe lint fixes (formatting, import order) to that one file, so whitespace never
+ * decides a reproduction. Everything else about the test is left as the agent wrote it.
+ */
 export async function collectTestFile(sandbox: FileSandbox, path: string): Promise<TestFile> {
   if (!isAllowedTestPath(path)) {
     throw new Error(
       `The test file must be under tests/ and end in .test.ts; got ${clean(path, 200)}`,
     );
   }
+  await sandbox.exec(`pnpm exec biome check --write '${path}'`, {
+    cwd: WORKSPACE_DIR,
+    timeout: 60_000,
+  });
   const { content } = await sandbox.readFile(`${WORKSPACE_DIR}/${path}`, { encoding: "utf-8" });
   if (content.length > MAX_TEST_CHARS) {
     throw new Error(`${path} is longer than ${MAX_TEST_CHARS} characters`);
@@ -182,7 +190,19 @@ export async function resetWorkspace(sandbox: ExecLike, sha: string): Promise<vo
   }
 }
 
-/** Writes the test file into the workspace as it is and runs only that file. */
+/**
+ * The project's own checks on the test file. The base commit passes them, so a failure comes
+ * from the test. A test that fails lint or typecheck would keep CI red even after a correct fix.
+ */
+export const TEST_CHECKS = [
+  { name: "lint", command: (path: string) => `pnpm exec biome check '${path}'` },
+  { name: "typecheck", command: () => "pnpm typecheck" },
+] as const;
+
+/**
+ * Writes the test file into the workspace as it is, checks that it passes lint and typecheck,
+ * and runs only that file.
+ */
 export async function runTest(sandbox: FileSandbox, test: TestFile): Promise<Verification> {
   if (!isAllowedTestPath(test.path)) {
     throw new Error("Refusing to run a test outside tests/");
@@ -190,6 +210,25 @@ export async function runTest(sandbox: FileSandbox, test: TestFile): Promise<Ver
   const target = `${WORKSPACE_DIR}/${test.path}`;
   await sandbox.exec(`mkdir -p '${target.slice(0, target.lastIndexOf("/"))}'`);
   await sandbox.writeFile(target, test.content, { encoding: "utf-8" });
+
+  for (const check of TEST_CHECKS) {
+    const run = await sandbox.exec(check.command(test.path), {
+      cwd: WORKSPACE_DIR,
+      timeout: 120_000,
+    });
+    if (run.exitCode !== 0) {
+      const output = clean(`${run.stdout}\n${run.stderr}`, 4_000).slice(-1_000);
+      return {
+        testFile: test.path,
+        testSha256: test.sha256,
+        passed: 0,
+        failed: 0,
+        failures: [{ name: `pnpm ${check.name}`, message: output }],
+        status: "invalid",
+        reason: `the test file does not pass ${check.name}, so CI would stay red even after a correct fix`,
+      };
+    }
+  }
 
   let exitCode: number;
   try {
