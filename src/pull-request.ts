@@ -1,11 +1,5 @@
-import { type Candidate, candidateKeys, classifyChange } from "./candidate";
 import type { GitHubClient, PullRequest } from "./github/client";
-import { clean, isAllowedTestPath, sha256Hex } from "./verify";
-
-/** The part of an R2 bucket binding this module uses. */
-export interface CandidateSource {
-  get(key: string): Promise<{ text(): Promise<string> } | null>;
-}
+import { clean, isAllowedTestPath, sha256Hex, type TestFile, type Verification } from "./verify";
 
 export interface PullRequestResult {
   action: "created" | "exists" | "skipped";
@@ -15,13 +9,18 @@ export interface PullRequestResult {
   url: string | null;
 }
 
-export interface PullRequestInput {
+export interface HandOff {
   repo: string;
   baseBranch: string;
   issueNumber: number;
   runId: string;
-  candidate: Candidate;
-  proposal: { summary: string; rationale: string } | null;
+  baseSha: string;
+  /** The agent's test, as collected before the workspace was reset. */
+  test: TestFile;
+  /** The trusted re-run of that test on the base commit. */
+  verification: Verification;
+  /** What the agent reported. Shown as its claim, not as fact. */
+  outcome: { summary: string; expected: string; observed: string };
 }
 
 /** The branch a run's pull request comes from. One per issue, like the run itself. */
@@ -30,102 +29,101 @@ export function pullRequestBranch(issueNumber: number): string {
 }
 
 /**
- * Reads the candidate back from R2 and checks that it is the one that was verified: status
- * `verified`, the expected digest, a patch that still hashes to it, and only files a fix may
- * touch. The pull request is built from this record, never from what an agent says.
+ * Only a test the harness saw fail goes into a pull request: the trusted re-run must be red, and
+ * it must have run exactly these bytes. The pull request holds nothing else.
  */
-export async function loadVerifiedCandidate(
-  bucket: CandidateSource,
-  runId: string,
-  digest: string,
-): Promise<Candidate> {
-  const key = candidateKeys(runId).record;
-  const object = await bucket.get(key);
-  if (!object) {
-    throw new Error(`No candidate in R2 at ${key}`);
+export async function checkHandOff(handOff: HandOff): Promise<void> {
+  const { test, verification } = handOff;
+  if (verification.status !== "red") {
+    throw new Error("Only a verified failing test can be handed off");
   }
-  const candidate = JSON.parse(await object.text()) as Candidate;
-  if (candidate.status !== "verified") {
-    throw new Error("The stored candidate is not verified");
+  if (!isAllowedTestPath(test.path) || verification.testFile !== test.path) {
+    throw new Error(`Unexpected test file: ${clean(test.path, 200)}`);
   }
-  if (candidate.digest !== digest || (await sha256Hex(candidate.patch)) !== digest) {
-    throw new Error("The stored candidate does not match the verified digest");
+  const sha256 = await sha256Hex(test.content);
+  if (sha256 !== test.sha256 || verification.testSha256 !== sha256) {
+    throw new Error("The test file does not match the one that was verified");
   }
-  for (const file of candidate.files) {
-    const isTest = file.path === candidate.testFile && isAllowedTestPath(file.path);
-    if (!isTest && classifyChange({ status: "??", path: file.path }, "") !== "apply") {
-      throw new Error(
-        `The candidate touches a file a fix may not change: ${clean(file.path, 200)}`,
-      );
-    }
-  }
-  return candidate;
 }
 
-export function renderPullRequest(input: PullRequestInput): { title: string; body: string } {
-  const { candidate, issueNumber, runId, proposal } = input;
-  const keys = candidateKeys(runId);
+function fenced(text: string, lang: string): string {
+  const longest = Math.max(2, ...(text.match(/`+/g) ?? []).map((run) => run.length));
+  const fence = "`".repeat(longest + 1);
+  return `${fence}${lang}\n${text.trimEnd()}\n${fence}`;
+}
+
+export function renderTestPullRequest(handOff: HandOff): { title: string; body: string } {
+  const { issueNumber, runId, baseSha, test, verification, outcome } = handOff;
   const lines = [
     `Refs #${issueNumber}`,
     "",
     "> [!WARNING]",
     "> Written by an AI agent and checked by the triage harness. **Not reviewed by a person.**",
-    "> Read the whole diff before you mark this ready or merge it.",
+    "> This pull request adds a failing test and no fix. CI stays red until the bug is fixed.",
+    "",
+    "## The failing test",
+    "",
+    `\`${test.path}\` reproduces the issue. The harness ran it on a clean checkout of`,
+    `\`${baseSha}\` and it failed on an assertion (${verification.failed} failed,`,
+    `${verification.passed} passed).`,
     "",
   ];
-  if (proposal) {
-    lines.push("## What the agent changed", "", proposal.summary.trim(), "");
-    lines.push("## Why (the agent's reasoning, not verified)", "", proposal.rationale.trim(), "");
+  for (const failure of verification.failures.slice(0, 3)) {
+    lines.push(`**${failure.name}**`, "", fenced(failure.message, "text"), "");
   }
   lines.push(
-    "## What the harness checked",
+    "## What the agent reported (not verified)",
     "",
-    `In a fresh sandbox, on base commit \`${candidate.baseSha}\`:`,
+    clean(outcome.summary, 2_000),
     "",
-    `- the unchanged regression test \`${candidate.testFile}\` failed without the fix`,
-    "- the same test passed with the fix",
-  );
-  for (const check of candidate.checks) {
-    lines.push(`- \`${check.command}\` passed`);
-  }
-  lines.push(
+    `- **Expected:** ${clean(outcome.expected, 2_000)}`,
+    `- **Observed:** ${clean(outcome.observed, 2_000)}`,
+    "",
+    "## To fix it",
+    "",
+    "Push commits to this branch (a person or a coding agent) that:",
+    "",
+    "- make this test pass **without changing it**,",
+    "- change only `src/`, plus a new file under `migrations/` if the schema must change,",
+    "- keep `pnpm lint`, `pnpm typecheck`, `pnpm test` and `pnpm build` passing.",
     "",
     "## Evidence",
     "",
-    `- Candidate digest: \`sha256:${candidate.digest}\` (SHA-256 of the patch)`,
+    `- Base commit: \`${baseSha}\``,
+    `- Test SHA-256: \`${test.sha256}\``,
     `- Report: \`runs/${runId}/report.md\` in the reports bucket`,
-    `- Patch: \`${keys.patch}\`, record: \`${keys.record}\``,
-    `- Regression test SHA-256: \`${candidate.testSha256}\``,
   );
   return {
-    title: `Candidate fix for #${issueNumber} (agent-written, unreviewed)`,
+    title: `Failing test for #${issueNumber} (agent-written, unreviewed)`,
     body: lines.join("\n"),
   };
 }
 
-function commitMessage(input: PullRequestInput): string {
+function commitMessage(handOff: HandOff): string {
   return [
-    `Candidate fix for #${input.issueNumber}`,
+    `Add a failing test for #${handOff.issueNumber}`,
     "",
-    "Written by the ADLC triage agent and checked by its harness. Not reviewed by a person.",
+    "Written by the ADLC triage agent and verified red by its harness. Not reviewed by a person.",
     "",
-    `Candidate: sha256:${input.candidate.digest}`,
-    `Base: ${input.candidate.baseSha}`,
+    `Test: ${handOff.test.path} (sha256:${handOff.test.sha256})`,
+    `Base: ${handOff.baseSha}`,
   ].join("\n");
 }
 
 /**
- * Opens a draft pull request for a verified candidate. The Worker builds the commit through
- * GitHub's Git Data API from the stored files, so the token never enters a sandbox. Safe to
- * retry: an existing pull request is reported, and an existing branch is reused only if it
- * holds exactly these files on this base commit. It never merges and never force-pushes.
+ * Opens a draft pull request that adds only the verified failing test, on top of the base
+ * commit. The Worker builds the commit through GitHub's Git Data API, so the token never enters
+ * a sandbox. Safe to retry: an existing pull request is reported, and an existing branch is
+ * reused only if it holds exactly this test on this base commit. It never merges, never
+ * force-pushes, and never touches a branch with other changes.
  */
-export async function openDraftPullRequest(
+export async function openTestPullRequest(
   github: GitHubClient,
-  input: PullRequestInput,
+  handOff: HandOff,
 ): Promise<PullRequestResult> {
-  const { repo, candidate } = input;
-  const branch = pullRequestBranch(input.issueNumber);
+  await checkHandOff(handOff);
+  const { repo, baseSha, test } = handOff;
+  const branch = pullRequestBranch(handOff.issueNumber);
   const result = (
     action: PullRequestResult["action"],
     reason: string,
@@ -143,20 +141,22 @@ export async function openDraftPullRequest(
     return result("exists", "a pull request from this branch already exists", existing);
   }
 
-  const baseTree = await github.commitTree(repo, candidate.baseSha);
-  const tree = await github.createTree(repo, baseTree, candidate.files);
+  const baseTree = await github.commitTree(repo, baseSha);
+  const tree = await github.createTree(repo, baseTree, [
+    { path: test.path, content: test.content },
+  ]);
   const head = await github.branchHead(repo, branch);
   if (head === null) {
-    const commit = await github.createCommit(repo, commitMessage(input), tree, candidate.baseSha);
+    const commit = await github.createCommit(repo, commitMessage(handOff), tree, baseSha);
     await github.createBranch(repo, branch, commit);
   } else if ((await github.commitTree(repo, head)) !== tree) {
     return result("skipped", `branch ${branch} already exists with other changes`);
   }
 
   const pull = await github.createDraftPullRequest(repo, {
-    ...renderPullRequest(input),
+    ...renderTestPullRequest(handOff),
     head: branch,
-    base: input.baseBranch,
+    base: handOff.baseBranch,
   });
   return result("created", "opened a draft pull request", pull);
 }
