@@ -1,0 +1,25 @@
+AGENTS.md
+  s_16a7c74ee46c60::t_9586ef1a1ad6b1 67-70
+README.md
+  s_16a7c74ee46c60::t_dd6ea2c6536ead 5-6,11-18,362,364-367,369-371,373-383,386-392,395,401,404-415,418-420,437-447,459,461
+scripts/show-report.ts
+  s_16a7c74ee46c60::t_299548002d83e7 6-7,20,28
+tests/triage.test.ts
+  s_16a7c74ee46c60::t_5d1cff504066dd 17-18,20,776,779-780,783-784,786-789,791-803,815,844,846,857,875-888,891,899,903,908-909,911,914-915
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "9c0cb6e6cc56658ebd6c0f77c3b6515dada06f44",
+  "prompts": {},
+  "sessions": {
+    "s_16a7c74ee46c60": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_e778358b8ffeJeJYLEAovqRqp6",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Omkar Khair <omkar@cloudflare.com>"
+    }
+  }
+}
